@@ -625,7 +625,6 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 	p := &TeleportProcess{
 		Config: &servicecfg.Config{
 			Hostname:    "global-hostname",
-			HostUUID:    "global-uuid",
 			AdvertiseIP: "1.2.3.4",
 			Proxy: servicecfg.ProxyConfig{
 				PublicAddrs:         utils.MustParseAddrList("proxy-public-1", "proxy-public-2"),
@@ -714,7 +713,6 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 			role: types.RoleNode,
 			wantPrincipals: []string{
 				"global-hostname",
-				"global-uuid",
 				"node-public-1",
 				"node-public-2",
 				"1.2.3.4",
@@ -741,7 +739,6 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 			role: types.RoleApp,
 			wantPrincipals: []string{
 				"global-hostname",
-				"global-uuid",
 			},
 			wantDNS: []string{
 				"*.teleport.cluster.local",
@@ -752,7 +749,6 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 			role: types.RoleOkta,
 			wantPrincipals: []string{
 				"global-hostname",
-				"global-uuid",
 			},
 			wantDNS: []string{
 				"*.teleport.cluster.local",
