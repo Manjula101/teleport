@@ -2128,6 +2128,9 @@ func (process *TeleportProcess) initAuthService() error {
 	cn, err := services.NewClusterNameWithRandomID(types.ClusterNameSpecV2{
 		ClusterName: clusterName,
 	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
 
 	clusterConfig := cfg.ClusterConfiguration
 	if clusterConfig == nil {
