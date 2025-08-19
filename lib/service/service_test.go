@@ -713,6 +713,7 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 			role: types.RoleNode,
 			wantPrincipals: []string{
 				"global-hostname",
+				"global-uuid",
 				"node-public-1",
 				"node-public-2",
 				"1.2.3.4",
@@ -739,6 +740,7 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 			role: types.RoleApp,
 			wantPrincipals: []string{
 				"global-hostname",
+				"global-uuid",
 			},
 			wantDNS: []string{
 				"*.teleport.cluster.local",
@@ -749,6 +751,7 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 			role: types.RoleOkta,
 			wantPrincipals: []string{
 				"global-hostname",
+				"global-uuid",
 			},
 			wantDNS: []string{
 				"*.teleport.cluster.local",
@@ -765,7 +768,7 @@ func TestGetAdditionalPrincipals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.role.String(), func(t *testing.T) {
-			principals, dns, err := p.getAdditionalPrincipals(tt.role)
+			principals, dns, err := p.getAdditionalPrincipals(tt.role, "global-uuid")
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(principals, tt.wantPrincipals))
 			require.Empty(t, cmp.Diff(dns, tt.wantDNS, cmpopts.EquateEmpty()))

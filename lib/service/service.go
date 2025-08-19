@@ -916,7 +916,7 @@ func (process *TeleportProcess) getIdentity(role types.SystemRole) (i *state.Ide
 		// for admin identity use local auth server
 		// because admin identity is requested by auth server
 		// itself
-		principals, dnsNames, err := process.getAdditionalPrincipals(role)
+		principals, dnsNames, err := process.getAdditionalPrincipals(role, process.localAuth.ServerID)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -4050,7 +4050,7 @@ func (process *TeleportProcess) initTracingService() error {
 
 // getAdditionalPrincipals returns a list of additional principals to add
 // to role's service certificates.
-func (process *TeleportProcess) getAdditionalPrincipals(role types.SystemRole) ([]string, []string, error) {
+func (process *TeleportProcess) getAdditionalPrincipals(role types.SystemRole, hostUUID string) ([]string, []string, error) {
 	var principals []string
 	var dnsNames []string
 	if process.Config.Hostname != "" {
@@ -4102,6 +4102,10 @@ func (process *TeleportProcess) getAdditionalPrincipals(role types.SystemRole) (
 	case types.RoleAuth, types.RoleAdmin:
 		addrs = process.Config.Auth.PublicAddrs
 	case types.RoleNode:
+		// DELETE IN 5.0: We are manually adding HostUUID here in order
+		// to allow UUID based routing to function with older Auth Servers
+		// which don't automatically add UUID to the principal list.
+		principals = append(principals, hostUUID)
 		addrs = process.Config.SSH.PublicAddrs
 		// If advertise IP is set, add it to the list of principals. Otherwise
 		// add in the default (0.0.0.0) which will be replaced by the Auth Server
@@ -4123,6 +4127,8 @@ func (process *TeleportProcess) getAdditionalPrincipals(role types.SystemRole) (
 			utils.NetAddr{Addr: reversetunnelclient.LocalKubernetes},
 		)
 		addrs = append(addrs, process.Config.Kube.PublicAddrs...)
+	case types.RoleApp, types.RoleOkta:
+		principals = append(principals, hostUUID)
 	case types.RoleWindowsDesktop:
 		addrs = append(addrs,
 			utils.NetAddr{Addr: string(teleport.PrincipalLocalhost)},

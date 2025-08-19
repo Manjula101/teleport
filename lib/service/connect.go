@@ -376,10 +376,6 @@ func (process *TeleportProcess) reRegister(conn *Connector, additionalPrincipals
 }
 
 func (process *TeleportProcess) firstTimeConnect(role types.SystemRole) (*Connector, error) {
-	additionalPrincipals, dnsNames, err := process.getAdditionalPrincipals(role)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
 	var identity *state.Identity
 	if localAuth := process.getLocalAuth(); localAuth != nil {
 		// Auth service is on the same host, no need to go though the invitation
@@ -396,6 +392,10 @@ func (process *TeleportProcess) firstTimeConnect(role types.SystemRole) (*Connec
 			Role:     role,
 			HostUUID: localAuth.ServerID,
 			NodeName: process.Config.Hostname,
+		}
+		additionalPrincipals, dnsNames, err := process.getAdditionalPrincipals(role, localAuth.ServerID)
+		if err != nil {
+			return nil, trace.Wrap(err)
 		}
 		identity, err = auth.LocalRegister(id, localAuth, additionalPrincipals, dnsNames, process.Config.AdvertiseIP, systemRoles)
 		if err != nil {
@@ -431,6 +431,10 @@ func (process *TeleportProcess) firstTimeConnect(role types.SystemRole) (*Connec
 			Role:     role,
 			HostUUID: hostUUID,
 			NodeName: process.Config.Hostname,
+		}
+		additionalPrincipals, dnsNames, err := process.getAdditionalPrincipals(role, hostUUID)
+		if err != nil {
+			return nil, trace.Wrap(err)
 		}
 
 		registerParams := join.RegisterParams{
@@ -480,11 +484,13 @@ func (process *TeleportProcess) firstTimeConnect(role types.SystemRole) (*Connec
 	process.logger.InfoContext(process.ExitContext(), "Successfully obtained credentials to connect to the cluster.", "identity", role)
 	var connector *Connector
 	if role == types.RoleAdmin || role == types.RoleAuth {
+		var err error
 		connector, err = newConnector(identity, identity)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 	} else {
+		var err error
 		connector, err = process.getConnector(identity, identity)
 		if err != nil {
 			return nil, trace.Wrap(err)
@@ -864,7 +870,7 @@ func (process *TeleportProcess) rotate(conn *Connector, localState state.StateV2
 	id := clientIdentity.ID
 	local := localState.Spec.Rotation
 
-	additionalPrincipals, dnsNames, err := process.getAdditionalPrincipals(id.Role)
+	additionalPrincipals, dnsNames, err := process.getAdditionalPrincipals(id.Role, id.HostID())
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
