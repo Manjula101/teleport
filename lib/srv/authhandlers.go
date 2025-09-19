@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/gravitational/trace"
@@ -104,6 +105,10 @@ type AuthHandlerConfig struct {
 	// OnRBACFailure is an opitonal callback used to hook in metrics/logs related to
 	// RBAC failures.
 	OnRBACFailure func(conn ssh.ConnMetadata, ident *sshca.Identity, err error)
+
+	// GitForwardingChecker specifies an optional checker. Request when Component
+	// is teleport.ComponentForwardingGit. Ignored otherwise.
+	GitForwardingChecker GitForwardingChecker
 }
 
 func (c *AuthHandlerConfig) CheckAndSetDefaults() error {
@@ -338,9 +343,20 @@ func (h *AuthHandlers) CheckPortForward(addr string, ctx *ServerContext, request
 	return nil
 }
 
+func (h *AuthHandlers) GetPublicKeyCallbackForPermit(permit *decisionpb.SSHAccessPermit) sshutils.PublicKeyFunc {
+	return func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		return h.userKeyAuth(conn, key, permit)
+	}
+}
+
 // UserKeyAuth implements SSH client authentication using public keys and is
 // called by the server every time the client connects.
 func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (ppms *ssh.Permissions, rerr error) {
+	var noPermit *decisionpb.SSHAccessPermit
+	return h.userKeyAuth(conn, key, noPermit)
+}
+
+func (h *AuthHandlers) userKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey, stapledAccessPermit *decisionpb.SSHAccessPermit) (ppms *ssh.Permissions, rerr error) {
 	ctx := context.Background()
 
 	fingerprint := fmt.Sprintf("%v %v", key.Type(), sshutils.Fingerprint(key))
@@ -530,6 +546,23 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (pp
 		},
 	}
 
+	// the git forwarding component currently only supports an authorization model that makes sense
+	// for local identities. reject all non-local identities explicitly.
+	if h.c.Component == teleport.ComponentForwardingGit {
+		ca, err := h.authorityForCert(types.UserCA, cert.SignatureKey)
+		if err != nil {
+			log.ErrorContext(ctx, "permission denied", "error", err)
+			recordFailedLogin(err)
+			return nil, trace.Wrap(err)
+		}
+
+		if clusterName.GetClusterName() != ca.GetClusterName() {
+			log.ErrorContext(ctx, "cross-cluster git forwarding is not supported", "local_cluster", clusterName.GetClusterName(), "remote_cluster", ca.GetClusterName())
+			recordFailedLogin(trace.AccessDenied("cross-cluster git forwarding is not supported"))
+			return nil, trace.AccessDenied("cross-cluster git forwarding is not supported")
+		}
+	}
+
 	// even if the returned CA isn't used when a RBAC check isn't
 	// preformed, we still need to verify that User CA signed the
 	// client's certificate
@@ -545,8 +578,16 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (pp
 	if h.c.Component == teleport.ComponentForwardingGit && clusterName.GetClusterName() != ca.GetClusterName() {
 		log.ErrorContext(ctx, "cross-cluster git forwarding is not supported", "local_cluster", clusterName.GetClusterName(), "remote_cluster", ca.GetClusterName())
 		err = trace.AccessDenied("cross-cluster git forwarding is not supported")
-		recordFailedLogin(err)
-		return nil, err
+	}
+
+	// ensure that mismatched stapled permits are ignored
+	if stapledAccessPermit != nil {
+		if !slices.Contains(stapledAccessPermit.Logins, conn.User()) {
+			panic("stapled access permit does not contain the os_user")
+		}
+
+		// XXX: this validation is insufficient for production usage. stapled permits
+		// do not currently contain all information necessary for proper validation.
 	}
 
 	var accessPermit *decisionpb.SSHAccessPermit
@@ -562,13 +603,23 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (pp
 	case teleport.ComponentForwardingNode:
 		diagnosticTracing = true
 		if h.c.TargetServer != nil && h.c.TargetServer.IsOpenSSHNode() {
-			accessPermit, err = h.evaluateSSHAccess(ident, ca, clusterName.GetClusterName(), h.c.TargetServer, conn.User())
+			if stapledAccessPermit == nil {
+				accessPermit, err = h.evaluateSSHAccess(ident, ca, clusterName.GetClusterName(), h.c.TargetServer, conn.User())
+			} else {
+				log.InfoContext(ctx, "using stapled access permit", "permit", stapledAccessPermit)
+				accessPermit = stapledAccessPermit
+			}
 		} else {
 			proxyPermit, err = h.evaluateProxying(ident, ca, clusterName.GetClusterName())
 		}
 	case teleport.ComponentNode:
 		diagnosticTracing = true
-		accessPermit, err = h.evaluateSSHAccess(ident, ca, clusterName.GetClusterName(), h.c.Server.GetInfo(), conn.User())
+		if stapledAccessPermit == nil {
+			accessPermit, err = h.evaluateSSHAccess(ident, ca, clusterName.GetClusterName(), h.c.Server.GetInfo(), conn.User())
+		} else {
+			log.InfoContext(ctx, "using stapled access permit", "permit", stapledAccessPermit)
+			accessPermit = stapledAccessPermit
+		}
 	default:
 		return nil, trace.BadParameter("cannot determine appropriate authorization checks for unknown component %q (this is a bug)", h.c.Component)
 	}
@@ -616,6 +667,32 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (pp
 			return nil, trace.Wrap(err)
 		}
 		outputPermissions.Extensions[utils.ExtIntGitForwardingPermit] = string(encodedPermit)
+	}
+
+	if diagnosticTracing {
+		if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
+			types.ConnectionDiagnosticTrace_RBAC_NODE,
+			"You have access to the Node.",
+			nil,
+		); err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
+			types.ConnectionDiagnosticTrace_CONNECTIVITY,
+			"Node is alive and reachable.",
+			nil,
+		); err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
+			types.ConnectionDiagnosticTrace_RBAC_PRINCIPAL,
+			"The requested principal is allowed.",
+			nil,
+		); err != nil {
+			return nil, trace.Wrap(err)
+		}
 	}
 
 	if diagnosticTracing {
@@ -741,6 +818,17 @@ type GitForwardingPermit struct {
 	DisconnectExpiredCert time.Time
 }
 
+// GitForwardingChecker checks if the user is allowed to perform git forwarding. Git forwarding
+// is a distinct mode of operation, not a subset of standard ssh behaviors. see the srv/git package
+// for details.
+//
+// XXX: this type is experimental, and will likely be refactored to be part of core lib/decision logic
+// at a later date. dependency on this type should be minimized.
+type GitForwardingChecker interface {
+	// EvaluateGitForwarding checks if the user is allowed to perform git forwarding.
+	EvaluateGitForwarding(ident *sshca.Identity, ca types.CertAuthority, clusterName string, osUser string) (GitForwardingPermit, error)
+}
+
 // loginChecker checks if the Teleport user should be able to login to
 // a target.
 type loginChecker interface {
@@ -754,6 +842,10 @@ type proxyingChecker interface {
 	// evaluateProxying evaluates the capabilities/constraints related to a user's
 	// attempt to access proxy forwarding.
 	evaluateProxying(ident *sshca.Identity, ca types.CertAuthority, clusterName string) (*proxyingPermit, error)
+
+	// // evaluateSSHProxying evaluates the capabilities/constraints related to a user's
+	// // attempt to access proxy forwarding.
+	// evaluateSSHProxying(ident *sshca.Identity, ca types.CertAuthority, clusterName string, osUser string) (*sshProxyingPermit, error)
 }
 
 type gitForwardingChecker interface {
@@ -780,10 +872,7 @@ type proxyingPermit struct {
 }
 
 func (a *ahLoginChecker) evaluateProxying(ident *sshca.Identity, ca types.CertAuthority, clusterName string) (*proxyingPermit, error) {
-	// Use the server's shutdown context.
 	ctx := a.c.Server.Context()
-
-	a.log.DebugContext(ctx, "evaluating ssh proxying attempt", "teleport_user", ident.Username)
 
 	accessInfo, err := fetchAccessInfo(ident, ca, clusterName)
 	if err != nil {
@@ -825,6 +914,38 @@ func (a *ahLoginChecker) evaluateProxying(ident *sshca.Identity, ca types.CertAu
 		SessionRecordingMode:  accessChecker.SessionRecordingMode(constants.SessionRecordingServiceSSH),
 	}, nil
 }
+
+const extIntSSHProxyingPermit = "proxying-permit"
+
+type sshProxyingPermit struct {
+	clientIdleTimeout time.Duration
+}
+
+// func (a *ahLoginChecker) evaluateSSHProxying(ident *sshca.Identity, ca types.CertAuthority, clusterName string, osUser string) (*sshProxyingPermit, error) {
+// 	// Use the server's shutdown context.
+// 	ctx := a.c.Server.Context()
+
+// 	a.log.DebugContext(ctx, "Checking basic proxying permissions", "teleport_user", ident.Username, "os_user", osUser)
+
+// 	accessInfo, err := fetchAccessInfo(ident, ca, clusterName)
+// 	if err != nil {
+// 		return nil, trace.Wrap(err)
+// 	}
+
+// 	accessChecker, err := services.NewAccessChecker(accessInfo, clusterName, a.c.AccessPoint)
+// 	if err != nil {
+// 		return nil, trace.Wrap(err)
+// 	}
+
+// 	netConfig, err := a.c.AccessPoint.GetClusterNetworkingConfig(ctx)
+// 	if err != nil {
+// 		return nil, trace.Wrap(err)
+// 	}
+
+// 	return &sshProxyingPermit{
+// 		clientIdleTimeout: accessChecker.AdjustClientIdleTimeout(netConfig.GetClientIdleTimeout()),
+// 	}, nil
+// }
 
 func (a *ahLoginChecker) evaluateGitForwarding(ident *sshca.Identity, ca types.CertAuthority, clusterName string, target types.Server) (*GitForwardingPermit, error) {
 	// Use the server's shutdown context.
@@ -902,6 +1023,7 @@ func (a *ahLoginChecker) evaluateSSHAccess(ident *sshca.Identity, ca types.CertA
 	}
 
 	var isModeratedSessionJoin bool
+
 	// custom moderated session join permissions allow bypass of the standard node access checks
 	if osUser == teleport.SSHSessionJoinPrincipal &&
 		moderation.RoleSupportsModeratedSessions(accessChecker.Roles()) {
@@ -966,6 +1088,7 @@ func (a *ahLoginChecker) evaluateSSHAccess(ident *sshca.Identity, ca types.CertA
 	}
 
 	return &decisionpb.SSHAccessPermit{
+		Logins:                []string{osUser},
 		ForwardAgent:          accessChecker.CheckAgentForward(osUser) == nil,
 		X11Forwarding:         accessChecker.PermitX11Forwarding(),
 		MaxConnections:        accessChecker.MaxConnections(),
@@ -1074,4 +1197,21 @@ func timestampFromGoTime(t time.Time) *timestamppb.Timestamp {
 		return nil
 	}
 	return timestamppb.New(t)
+}
+
+func durationToGoDuration(d *durationpb.Duration) time.Duration {
+	// nil or "zero" Timestamps are mapped to Go's zero time (0-0-0 0:0.0) instead
+	// of unix epoch. The latter avoids problems with tooling (eg, Terraform) that
+	// sets structs to their defaults instead of using nil.
+	if d == nil || (d.Seconds == 0 && d.Nanos == 0) {
+		return 0
+	}
+	return d.AsDuration()
+}
+
+func durationFromGoDuration(d time.Duration) *durationpb.Duration {
+	if d == 0 {
+		return nil
+	}
+	return durationpb.New(d)
 }

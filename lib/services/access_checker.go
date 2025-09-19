@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -519,6 +520,9 @@ func (a *accessChecker) AccessInfo() *AccessInfo {
 // CheckAccess checks if the identity for this AccessChecker has access to the
 // given resource.
 func (a *accessChecker) CheckAccess(r AccessCheckable, state AccessState, matchers ...RoleMatcher) error {
+	if os.Getenv("TELEPORT_UNSTABLE_DENY_ACCESS_CHECKS") == "yes" {
+		panic("check access called when access checks are disabled")
+	}
 	if err := a.checkAllowedResources(r); err != nil {
 		return trace.Wrap(err)
 	}

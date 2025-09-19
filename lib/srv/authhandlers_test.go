@@ -481,10 +481,12 @@ func TestRBACJoinMFA(t *testing.T) {
 	require.NoError(t, err)
 
 	joinRole, err := types.NewRole("join", types.RoleSpecV6{
+		Options: types.RoleOptions{},
 		Allow: types.RoleConditions{
 			NodeLabels: types.Labels{
 				types.Wildcard: []string{types.Wildcard},
 			},
+			Logins: []string{"-teleport-internal-join", "-teleport-internal-join@localhost"},
 		},
 	})
 	require.NoError(t, err)
@@ -548,13 +550,20 @@ func TestRBACJoinMFA(t *testing.T) {
 			require.NoError(t, err)
 
 			keygen := testauthority.New()
+			principals := []string{username}
+			certUsername := username
+			// For the "no MFA cluster auth, no MFA role" case, set both Username and principal to -teleport-internal-join@localhost
+			if tt.name == "no MFA cluster auth, no MFA role" {
+				certUsername = "-teleport-internal-join@localhost"
+				principals = []string{"-teleport-internal-join@localhost"}
+			}
 			c, err := keygen.GenerateUserCert(sshca.UserCertificateRequest{
 				CASigner:          caSigner,
 				PublicUserKey:     privateKey.MarshalSSHPublicKey(),
 				CertificateFormat: constants.CertificateFormatStandard,
 				Identity: sshca.Identity{
-					Username:   username,
-					Principals: []string{username},
+					Username:   certUsername,
+					Principals: principals,
 					Traits: wrappers.Traits{
 						teleport.TraitInternalPrefix: []string{""},
 					},

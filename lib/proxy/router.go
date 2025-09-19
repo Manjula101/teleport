@@ -33,19 +33,23 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/gravitational/teleport"
+	decisionpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/decision/v1alpha1"
 	"github.com/gravitational/teleport/api/observability/tracing"
 	"github.com/gravitational/teleport/api/types"
 	apiutils "github.com/gravitational/teleport/api/utils"
 	"github.com/gravitational/teleport/api/utils/aws"
 	"github.com/gravitational/teleport/lib/agentless"
 	"github.com/gravitational/teleport/lib/auth/authclient"
+	"github.com/gravitational/teleport/lib/decision"
 	"github.com/gravitational/teleport/lib/desktop"
 	"github.com/gravitational/teleport/lib/observability/metrics"
 	"github.com/gravitational/teleport/lib/reversetunnelclient"
 	"github.com/gravitational/teleport/lib/services/readonly"
 	"github.com/gravitational/teleport/lib/sshagent"
+	"github.com/gravitational/teleport/lib/sshca"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
@@ -132,6 +136,8 @@ type RouterConfig struct {
 	TracerProvider oteltrace.TracerProvider
 	// Log is an optional logger. A default logger will be created if not set.
 	Logger *slog.Logger
+	// DecisionService evaluates access-control rules for target hosts.
+	DecisionService *decision.Service
 
 	// serverResolver is used to resolve hosts, used by tests
 	serverResolver serverResolverFn
@@ -157,6 +163,10 @@ func (c *RouterConfig) CheckAndSetDefaults() error {
 		c.TracerProvider = tracing.DefaultProvider()
 	}
 
+	if c.DecisionService == nil {
+		return trace.BadParameter("DecisionService must be provided")
+	}
+
 	if c.serverResolver == nil {
 		c.serverResolver = getServer
 	}
@@ -176,6 +186,7 @@ func (c *RouterConfig) CheckAndSetDefaults() error {
 // nodes, desktops, and other clusters.
 type Router struct {
 	clusterName                    string
+	pdp                            *decision.Service
 	localAccessPoint               LocalAccessPoint
 	localCluster                   reversetunnelclient.Cluster
 	clusterGetter                  ClusterGetter
@@ -199,6 +210,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 
 	return &Router{
 		clusterName:                    cfg.ClusterName,
+		pdp:                            cfg.DecisionService,
 		localAccessPoint:               cfg.LocalAccessPoint,
 		localCluster:                   localCluster,
 		clusterGetter:                  cfg.ClusterGetter,
@@ -212,7 +224,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 // DialHost dials the node that matches the provided host, port and cluster. If no matching node
 // is found an error is returned. If more than one matching node is found and the cluster networking
 // configuration is not set to route to the most recent an error is returned.
-func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, clusterName string, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, signer agentless.SignerCreator) (_ net.Conn, err error) {
+func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, clusterName string, maybeLoginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, signer agentless.SignerCreator) (_ net.Conn, err error) {
 	ctx, span := r.tracer.Start(
 		ctx,
 		"router/DialHost",
@@ -291,6 +303,47 @@ func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.
 		}
 	}
 
+	var permitBytes []byte
+	if loginName := maybeLoginName; loginName != "" {
+		// XXX: prototype invocation. extremely problematic. relies on dry run features, does not properly handle
+		// remote users, does not obey cert state, etc. DO NOT MERGE.
+		decision, err := r.pdp.EvaluateSSHAccess(ctx, &decisionpb.EvaluateSSHAccessRequest{
+			Metadata: &decisionpb.RequestMetadata{
+				PepVersionHint: teleport.Version,
+			},
+			SshAuthority: &decisionpb.SSHAuthority{
+				ClusterName:   r.clusterName, // XXX: in real logic, this *must* be derived from signing CA of user identity
+				AuthorityType: string(types.UserCA),
+			},
+			SshIdentity: decision.SSHIdentityFromSSHCA(identity),
+			Node: &decisionpb.Resource{
+				Kind: target.GetKind(),
+				Name: target.GetName(),
+			},
+			OsUser: loginName,
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if denial := decision.GetDenial(); denial != nil {
+			if denial.Metadata != nil && denial.Metadata.UserMessage != "" {
+				return nil, trace.AccessDenied("pdp: %s", denial.Metadata.UserMessage)
+			}
+			return nil, trace.AccessDenied("pdp: access denied")
+		}
+
+		permit := decision.GetPermit()
+		if permit == nil {
+			return nil, trace.AccessDenied("pdp: access denied (missing permit)")
+		}
+
+		permitBytes, err = proto.Marshal(permit)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
 	conn, err := cluster.Dial(reversetunnelclient.DialParams{
 		From:                  clientSrcAddr,
 		To:                    &utils.NetAddr{AddrNetwork: "tcp", Addr: serverAddr},
@@ -303,6 +356,7 @@ func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.
 		ProxyIDs:              target.GetProxyIDs(),
 		ConnType:              types.NodeTunnel,
 		TargetServer:          target,
+		Permit:                permitBytes,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)

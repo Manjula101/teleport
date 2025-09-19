@@ -279,6 +279,7 @@ func TestBasicFunctionality(t *testing.T) {
 	})
 
 	clientDialRandomNode := func() (net.Conn, error) {
+		var noPermit []byte
 		return client.Dial(
 			uuid.NewString()+".testcluster",
 			&utils.NetAddr{
@@ -289,6 +290,7 @@ func TestBasicFunctionality(t *testing.T) {
 				Addr:        "7.8.9.0:12",
 			},
 			types.NodeTunnel,
+			noPermit,
 		)
 	}
 
@@ -334,6 +336,7 @@ func TestBasicFunctionality(t *testing.T) {
 			return p1, nil
 		}))
 
+		var noPermit []byte
 		conn, err := client.Dial(
 			"echo.echo",
 			&utils.NetAddr{
@@ -344,6 +347,7 @@ func TestBasicFunctionality(t *testing.T) {
 				Addr:        "7.8.9.0:12",
 			},
 			"echo",
+			noPermit,
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = conn.Close() })

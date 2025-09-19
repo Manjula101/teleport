@@ -56,10 +56,12 @@ message EvaluateSSHAccessResponse {
 // SSHAccessPermit describes the parameters/constraints of a permissible SSH
 // access attempt.
 message SSHAccessPermit {
-  reserved 2, 4, 7, 12, 13, 15, 16, 17;
+  reserved 4, 7, 12, 13, 15, 16, 17;
 
   // Metadata holds common authorization decision response fields.
   PermitMetadata metadata = 1;
+
+  repeated string logins = 2;
 
   // ForwardAgent indicates whether or not the user is permitted to use SSH agent forwarding.
   bool forward_agent = 3;

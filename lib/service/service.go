@@ -123,6 +123,7 @@ import (
 	"github.com/gravitational/teleport/lib/cloud/imds/azure"
 	gcpimds "github.com/gravitational/teleport/lib/cloud/imds/gcp"
 	oracleimds "github.com/gravitational/teleport/lib/cloud/imds/oracle"
+	"github.com/gravitational/teleport/lib/decision"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/events/athena"
@@ -3421,9 +3422,10 @@ func (process *TeleportProcess) initSSH() error {
 		var resumableServer *resumption.SSHServerWrapper
 		if os.Getenv("TELEPORT_UNSTABLE_DISABLE_SSH_RESUMPTION") == "" {
 			resumableServer = resumption.NewSSHServerWrapper(resumption.SSHServerWrapperConfig{
-				SSHServer: s.HandleConnection,
-				HostID:    conn.HostUUID(),
-				DataDir:   cfg.DataDir,
+				SSHServer:        s.HandleConnection,
+				SSHStapledServer: s.HandleStapledConnection,
+				HostID:           conn.HostUUID(),
+				DataDir:          cfg.DataDir,
 			})
 
 			go func() {
@@ -3485,7 +3487,7 @@ func (process *TeleportProcess) initSSH() error {
 		}
 
 		if conn.UseTunnel() {
-			var serverHandler reversetunnel.ServerHandler = s
+			var serverHandler reversetunnel.StapledServerHandler = s
 			if resumableServer != nil {
 				serverHandler = resumableServer
 			}
@@ -3502,6 +3504,7 @@ func (process *TeleportProcess) initSSH() error {
 					AuthMethods:          conn.ClientAuthMethods(),
 					Cluster:              conn.ClusterName(),
 					Server:               serverHandler,
+					StapledServer:        serverHandler,
 					FIPS:                 process.Config.FIPS,
 					ConnectedProxyGetter: proxyGetter,
 				})
@@ -5058,12 +5061,21 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 
 	var proxyRouter *proxy.Router
 	if !process.Config.Proxy.DisableReverseTunnel {
+		pdp, err := decision.NewService(decision.Config{
+			AccessPoint:    accessPoint,
+			DisableDryRuns: true, /* proxy lacks necessary facilities to handle dry runs */
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
 		router, err := proxy.NewRouter(proxy.RouterConfig{
 			ClusterName:      clusterName,
 			LocalAccessPoint: accessPoint,
 			ClusterGetter:    tsrv,
 			TracerProvider:   process.TracingProvider,
 			Logger:           process.logger.With(teleport.ComponentKey, "router"),
+			DecisionService:  pdp,
 		})
 		if err != nil {
 			return trace.Wrap(err)

@@ -28,6 +28,7 @@ import (
 	"sync"
 
 	"github.com/gravitational/trace"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -35,7 +36,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/gravitational/teleport"
-	"github.com/gravitational/teleport/api/client/proto"
 	transportv2pb "github.com/gravitational/teleport/api/gen/proto/go/teleport/transport/v2"
 	"github.com/gravitational/teleport/api/types"
 	streamutils "github.com/gravitational/teleport/api/utils/grpc/stream"
@@ -43,6 +43,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/sshagent"
+	"github.com/gravitational/teleport/lib/sshca"
 	"github.com/gravitational/teleport/lib/utils"
 	logutils "github.com/gravitational/teleport/lib/utils/log"
 )
@@ -50,7 +51,7 @@ import (
 // Dialer is the interface that groups basic dialing methods.
 type Dialer interface {
 	DialSite(ctx context.Context, cluster string, clientSrcAddr, clientDstAddr net.Addr) (net.Conn, error)
-	DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, cluster string, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, singer agentless.SignerCreator) (net.Conn, error)
+	DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, cluster, loginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, singer agentless.SignerCreator) (net.Conn, error)
 }
 
 // ConnectionMonitor monitors authorized connections and terminates them when
@@ -171,24 +172,7 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 	}
 
 	// TODO(cthach): Check with Decision API if MFA is required. If it is, send a challenge to the client.
-	s.cfg.Logger.InfoContext(ctx, "Checking if MFA is required")
-
-	mfaResp, err := s.cfg.AuthClient.PerformMFACeremony(ctx, &proto.CreateAuthenticateChallengeRequest{
-		Request: &proto.CreateAuthenticateChallengeRequest_ContextUser{
-			ContextUser: &proto.ContextUser{},
-		},
-	})
-	if err != nil {
-		return trace.Wrap(err, "failed creating MFA ceremony")
-	}
-
-	// This really only checks if the user has any MFA devices registered.
-	if mfaResp.GetWebauthn() == nil && mfaResp.GetSSO() == nil {
-		s.cfg.Logger.InfoContext(ctx, "MFA is not required for this connection", "login", authzContext.GetUserMetadata().Login, "node", host)
-	}
-
-	// TODO(cthach): Send the challenge to the client and wait for a response.
-	s.cfg.Logger.InfoContext(ctx, "MFA is required for this connection", "login", authzContext.GetUserMetadata().Login, "node", host)
+	s.cfg.Logger.InfoContext(ctx, "----->>>>> Checking if MFA is required")
 
 	// create streams for SSH and Agent protocols
 	sshStream, agentStream := newSSHStreams(stream)
@@ -239,8 +223,30 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 		return trace.Wrap(err, "could get not client destination address; listener address %q, client source address %q", s.cfg.LocalAddr.String(), p.Addr.String())
 	}
 
+	ident := authzContext.Identity.GetIdentity()
+
+	sshIdent := &sshca.Identity{
+		Username:           ident.Username,
+		Roles:              ident.Groups,
+		Traits:             ident.Traits,
+		AllowedResourceIDs: ident.AllowedResourceIDs,
+		CertType:           ssh.UserCert,
+	}
+
 	signer := s.cfg.SignerFn(authzContext, req.GetDialTarget().GetCluster())
-	hostConn, err := s.cfg.Dialer.DialHost(ctx, p.Addr, clientDst, host, port, req.GetDialTarget().GetCluster(), authzContext.Checker.CheckAccessToRemoteCluster, s.cfg.agentGetterFn(agentStreamRW), signer)
+	hostConn, err := s.cfg.Dialer.DialHost(
+		ctx,
+		p.Addr,
+		clientDst,
+		host,
+		port,
+		req.GetDialTarget().GetCluster(),
+		authzContext.GetUserMetadata().Login,
+		sshIdent,
+		authzContext.Checker.CheckAccessToRemoteCluster,
+		s.cfg.agentGetterFn(agentStreamRW),
+		signer,
+	)
 	if err != nil {
 		// Return ambiguous errors unadorned so that clients can detect them easily.
 		if errors.Is(err, teleport.ErrNodeIsAmbiguous) {

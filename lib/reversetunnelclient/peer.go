@@ -47,6 +47,7 @@ func NewPeerDialer(clusterGetter ClusterGetter) PeerDialerFunc {
 			From:          request.From,
 			To:            request.To,
 			FromPeerProxy: true,
+			Permit:        request.Permit,
 		}
 
 		conn, err := site.Dial(dialParams)

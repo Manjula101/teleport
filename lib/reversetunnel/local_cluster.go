@@ -633,6 +633,7 @@ func (s *localCluster) getConn(params reversetunnelclient.DialParams) (conn net.
 		ConnType:      params.ConnType,
 		ClientSrcAddr: stringOrEmpty(params.From),
 		ClientDstAddr: stringOrEmpty(params.OriginalClientDstAddr),
+		Permit:        params.Permit,
 	}
 	if params.To != nil {
 		dreq.Address = params.To.String()
@@ -660,7 +661,7 @@ func (s *localCluster) getConn(params reversetunnelclient.DialParams) (conn net.
 	if peeringEnabled {
 		s.logger.InfoContext(s.srv.ctx, "Dialing over peer proxy")
 		conn, peerErr = s.peerClient.DialNode(
-			params.ProxyIDs, params.ServerID, params.From, params.To, params.ConnType,
+			params.ProxyIDs, params.ServerID, params.From, params.To, params.ConnType, params.Permit,
 		)
 		if peerErr == nil {
 			return newMetricConn(conn, dialTypePeer, dialStart, s.srv.Clock), true, nil

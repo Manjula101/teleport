@@ -82,7 +82,7 @@ func onProxyCommandSSH(cf *CLIConf, initFunc ClientInitFunc) error {
 			return trace.Wrap(err)
 		}
 
-		conn, _, err := clt.DialHostWithResumption(cf.Context, target.Addr, clt.ClusterName(), tc.LocalAgent().ExtendedAgent)
+		conn, _, err := clt.DialHostWithResumption(cf.Context, target.Addr, clt.ClusterName(), tc.HostLogin, tc.LocalAgent().ExtendedAgent)
 		if err != nil {
 			return trace.Wrap(err)
 		}

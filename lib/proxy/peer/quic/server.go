@@ -375,6 +375,7 @@ func (s *Server) handleStream(stream *quic.Stream, conn *quic.Conn, log *slog.Lo
 		},
 		ServerID: req.GetTargetHostId(),
 		ConnType: types.TunnelType(req.GetConnectionType()),
+		Permit:   req.GetPermit(),
 	})
 	if err != nil {
 		sendErr(err)

@@ -325,6 +325,7 @@ type SSHAccessPermit struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Metadata holds common authorization decision response fields.
 	Metadata *PermitMetadata `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Logins   []string        `protobuf:"bytes,2,rep,name=logins,proto3" json:"logins,omitempty"`
 	// ForwardAgent indicates whether or not the user is permitted to use SSH agent forwarding.
 	ForwardAgent bool `protobuf:"varint,3,opt,name=forward_agent,json=forwardAgent,proto3" json:"forward_agent,omitempty"`
 	// PortForwardMode describes the kind of port forwarding permitted during this access attempt.
@@ -401,6 +402,13 @@ func (*SSHAccessPermit) Descriptor() ([]byte, []int) {
 func (x *SSHAccessPermit) GetMetadata() *PermitMetadata {
 	if x != nil {
 		return x.Metadata
+	}
+	return nil
+}
+
+func (x *SSHAccessPermit) GetLogins() []string {
+	if x != nil {
+		return x.Logins
 	}
 	return nil
 }
@@ -792,9 +800,10 @@ const file_teleport_decision_v1alpha1_ssh_access_proto_rawDesc = "" +
 	"\x06permit\x18\x01 \x01(\v2+.teleport.decision.v1alpha1.SSHAccessPermitH\x00R\x06permit\x12E\n" +
 	"\x06denial\x18\x02 \x01(\v2+.teleport.decision.v1alpha1.SSHAccessDenialH\x00R\x06denialB\n" +
 	"\n" +
-	"\bdecision\"\xca\a\n" +
+	"\bdecision\"\xdc\a\n" +
 	"\x0fSSHAccessPermit\x12F\n" +
-	"\bmetadata\x18\x01 \x01(\v2*.teleport.decision.v1alpha1.PermitMetadataR\bmetadata\x12#\n" +
+	"\bmetadata\x18\x01 \x01(\v2*.teleport.decision.v1alpha1.PermitMetadataR\bmetadata\x12\x16\n" +
+	"\x06logins\x18\x02 \x03(\tR\x06logins\x12#\n" +
 	"\rforward_agent\x18\x03 \x01(\bR\fforwardAgent\x12Z\n" +
 	"\x11port_forward_mode\x18\x05 \x01(\x0e2..teleport.decision.v1alpha1.SSHPortForwardModeR\x0fportForwardMode\x12I\n" +
 	"\x13client_idle_timeout\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\x11clientIdleTimeout\x12R\n" +
@@ -812,7 +821,7 @@ const file_teleport_decision_v1alpha1_ssh_access_proto_rawDesc = "" +
 	"\x12private_key_policy\x18\x15 \x01(\tR\x10privateKeyPolicy\x12I\n" +
 	"\flock_targets\x18\x16 \x03(\v2&.teleport.decision.v1alpha1.LockTargetR\vlockTargets\x12!\n" +
 	"\fmapped_roles\x18\x17 \x03(\tR\vmappedRoles\x12Q\n" +
-	"\x0fhost_users_info\x18\x18 \x01(\v2).teleport.decision.v1alpha1.HostUsersInfoR\rhostUsersInfoJ\x04\b\x02\x10\x03J\x04\b\x04\x10\x05J\x04\b\a\x10\bJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11J\x04\b\x11\x10\x12\"Y\n" +
+	"\x0fhost_users_info\x18\x18 \x01(\v2).teleport.decision.v1alpha1.HostUsersInfoR\rhostUsersInfoJ\x04\b\x04\x10\x05J\x04\b\a\x10\bJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11J\x04\b\x11\x10\x12\"Y\n" +
 	"\x0fSSHAccessDenial\x12F\n" +
 	"\bmetadata\x18\x01 \x01(\v2*.teleport.decision.v1alpha1.DenialMetadataR\bmetadata\"\xb5\x02\n" +
 	"\n" +

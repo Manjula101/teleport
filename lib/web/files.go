@@ -192,6 +192,8 @@ func (h *Handler) transferFile(w http.ResponseWriter, r *http.Request, p httprou
 		req.serverID,
 		"0",
 		tc.SiteName,
+		tc.HostLogin,
+		ident,
 		accessChecker.CheckAccessToRemoteCluster,
 		getAgent,
 		signer,

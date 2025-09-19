@@ -509,19 +509,19 @@ func (c *Client) ClientConfig(ctx context.Context, cluster string) (client.Confi
 
 // DialHost establishes a connection to the `target` in cluster named `cluster`. If a keyring
 // is provided it will only be forwarded if proxy recording mode is enabled in the cluster.
-func (c *Client) DialHost(ctx context.Context, target, cluster string, keyring agent.ExtendedAgent) (net.Conn, ClusterDetails, error) {
+func (c *Client) DialHost(ctx context.Context, target, cluster, loginName string, keyring agent.ExtendedAgent) (net.Conn, ClusterDetails, error) {
 	// Prefer to use the relay transport if it is configured.
 	// TODO(cthach): Add support for transportv2 relay.
 	switch {
 	case c.relayTransport != nil:
-		conn, detailsv1, err := c.relayTransport.DialHost(ctx, target, cluster, nil, keyring)
+		conn, detailsv1, err := c.relayTransport.DialHost(ctx, target, cluster, loginName, nil, keyring)
 		if err != nil {
 			return nil, ClusterDetails{}, trace.ConnectionProblem(err, "failed connecting to host %s in cluster %s via relay: %v", target, cluster, err)
 		}
 		return conn, ClusterDetails{FIPS: detailsv1.FipsEnabled}, nil
 
 	case c.transport != nil:
-		conn, detailsv2, err := c.transportv2.DialHost(ctx, target, cluster, nil, keyring)
+		conn, detailsv2, err := c.transportv2.DialHost(ctx, target, cluster, loginName, nil, keyring)
 		if err != nil {
 			return nil, ClusterDetails{}, trace.ConnectionProblem(err, "failed connecting to host %s in cluster %s via transportv2: %v", target, cluster, err)
 		}

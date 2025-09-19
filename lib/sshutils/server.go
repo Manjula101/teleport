@@ -37,8 +37,10 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/gravitational/teleport"
+	decisionpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/decision/v1alpha1"
 	"github.com/gravitational/teleport/api/observability/tracing"
 	tracessh "github.com/gravitational/teleport/api/observability/tracing/ssh"
 	"github.com/gravitational/teleport/api/utils/sshutils"
@@ -79,6 +81,8 @@ type Server struct {
 
 	cfg     ssh.ServerConfig
 	limiter *limiter.Limiter
+
+	GetPublicKeyCallbackForPermit func(*decisionpb.SSHAccessPermit) PublicKeyFunc
 
 	closeContext context.Context
 	closeFunc    context.CancelFunc
@@ -239,6 +243,8 @@ func NewServer(
 	s.cfg.PublicKeyCallback = ah.PublicKey
 	s.cfg.PasswordCallback = ah.Password
 	s.cfg.NoClientAuth = ah.NoClient
+
+	s.GetPublicKeyCallbackForPermit = ah.GetPublicKeyCallbackForPermit
 
 	if s.fips {
 		s.cfg.PublicKeyAuthAlgorithms = defaults.FIPSPubKeyAuthAlgorithms
@@ -483,6 +489,21 @@ func (s *Server) ActiveConnections() int32 {
 // and proxies, proxies and servers, servers and auth, etc), except for forwarding
 // SSH proxy that used when "recording on proxy" is enabled.
 func (s *Server) HandleConnection(conn net.Conn) {
+	s.handleConnection(conn, nil)
+}
+
+func (s *Server) HandleStapledConnection(conn net.Conn, permit []byte) {
+	p := new(decisionpb.SSHAccessPermit)
+	if err := proto.Unmarshal(permit, p); err != nil {
+		s.logger.ErrorContext(s.closeContext, "failed to unmarshal SSHAccessPermit", "error", err)
+		_ = conn.Close()
+		return
+	}
+
+	s.handleConnection(conn, p)
+}
+
+func (s *Server) handleConnection(conn net.Conn, permit *decisionpb.SSHAccessPermit) {
 	if s.ingressReporter != nil {
 		s.ingressReporter.ConnectionAccepted(s.ingressService, conn)
 		defer s.ingressReporter.ConnectionClosed(s.ingressService, conn)
@@ -504,6 +525,12 @@ func (s *Server) HandleConnection(conn net.Conn) {
 	}
 	if v := serverVersionOverrideFromConn(conn); v != "" && v != cfg.ServerVersion {
 		cfg.ServerVersion = v
+	}
+
+	if f := s.GetPublicKeyCallbackForPermit; f != nil && permit != nil {
+		cfg.PublicKeyCallback = f(permit)
+	} else if permit != nil {
+		s.logger.WarnContext(s.closeContext, "unable to propagate permit to key auth (callback not set)", "permit", permit)
 	}
 
 	// apply idle read/write timeout to this connection.
@@ -726,6 +753,8 @@ type AuthMethods struct {
 	PublicKey PublicKeyFunc
 	Password  PasswordFunc
 	NoClient  bool
+
+	GetPublicKeyCallbackForPermit func(*decisionpb.SSHAccessPermit) PublicKeyFunc
 }
 
 // GetHostSignersFunc is an infallible function that returns host signers for

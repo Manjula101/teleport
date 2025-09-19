@@ -448,6 +448,10 @@ func (s *Server) HandleConnection(conn net.Conn) {
 	s.srv.HandleConnection(conn)
 }
 
+func (s *Server) HandleStapledConnection(conn net.Conn, permit []byte) {
+	s.srv.HandleStapledConnection(conn, permit)
+}
+
 // SetUserAccountingPaths is a functional server option to override the user accounting database and log path.
 func SetUserAccountingPaths(utmpPath, wtmpPath, btmpPath, wtmpdbPath string) ServerOption {
 	return func(s *Server) error {
@@ -879,7 +883,10 @@ func New(
 		component,
 		addr, s,
 		getHostSigners,
-		sshutils.AuthMethods{PublicKey: s.authHandlers.UserKeyAuth},
+		sshutils.AuthMethods{
+			PublicKey:                     s.authHandlers.UserKeyAuth,
+			GetPublicKeyCallbackForPermit: s.authHandlers.GetPublicKeyCallbackForPermit,
+		},
 		sshutils.SetLimiter(s.limiter),
 		sshutils.SetRequestHandler(s),
 		sshutils.SetNewConnHandler(s),

@@ -204,9 +204,6 @@ type IdentityContext struct {
 	// AccessPermit encodes the parameters/constraints associated with an authorized ssh access.
 	AccessPermit *decisionpb.SSHAccessPermit
 
-	// ProxyingPermit encodes the parameters/constraints associated with an authorized proxying access.
-	ProxyingPermit *proxyingPermit
-
 	// WebSessionPermit encodes the parameters/constraints associated with an authorized web session (note that
 	// this permit is more of a compatibility layer than a "true" permit, and that most web session logic outside
 	// of this package still relies on passing around an access checker).
@@ -214,6 +211,9 @@ type IdentityContext struct {
 
 	// GitForwardingPermit encodes the parameters/constraints associated with an authorized git forwarding attempt.
 	GitForwardingPermit *GitForwardingPermit
+
+	// ProxyingPermit encodes the parameters/constraints associated with an authorized proxying access.
+	ProxyingPermit *proxyingPermit
 
 	// TeleportUser is the Teleport user associated with the connection.
 	TeleportUser string
