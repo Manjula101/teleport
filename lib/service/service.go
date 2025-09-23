@@ -5075,7 +5075,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			ClusterGetter:    tsrv,
 			TracerProvider:   process.TracingProvider,
 			Logger:           process.logger.With(teleport.ComponentKey, "router"),
-			DecisionService:  pdp,
+			DecisionService:  pdp, // TODO(cthach): Need to make call to Auth for this
 		})
 		if err != nil {
 			return trace.Wrap(err)
@@ -5575,7 +5575,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		},
 		ConnectionMonitor: connMonitor,
 		LocalAddr:         listeners.sshGRPC.Addr(),
-		AuthClient:        conn.Client,
+		PDP:               conn.Client.DecisionClient(),
 	})
 	if err != nil {
 		return trace.Wrap(err)

@@ -341,7 +341,9 @@ type TargetHost struct {
 	// The hostname/ip/uuid:port of the remote host.
 	HostPort string `protobuf:"bytes,1,opt,name=host_port,json=hostPort,proto3" json:"host_port,omitempty"`
 	// The cluster the server is a member of
-	Cluster       string `protobuf:"bytes,2,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	Cluster string `protobuf:"bytes,2,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	// The OS login name to use when connecting to the host.
+	LoginName     string `protobuf:"bytes,3,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -386,6 +388,13 @@ func (x *TargetHost) GetHostPort() string {
 func (x *TargetHost) GetCluster() string {
 	if x != nil {
 		return x.Cluster
+	}
+	return ""
+}
+
+func (x *TargetHost) GetLoginName() string {
+	if x != nil {
+		return x.LoginName
 	}
 	return ""
 }
@@ -455,11 +464,13 @@ const file_teleport_transport_v2_transport_service_proto_rawDesc = "" +
 	"\x05agent\x18\x04 \x01(\v2\x1c.teleport.transport.v2.FrameH\x00R\x05agentB\t\n" +
 	"\apayload\"!\n" +
 	"\x05Frame\x12\x18\n" +
-	"\apayload\x18\x01 \x01(\fR\apayload\"C\n" +
+	"\apayload\x18\x01 \x01(\fR\apayload\"b\n" +
 	"\n" +
 	"TargetHost\x12\x1b\n" +
 	"\thost_port\x18\x01 \x01(\tR\bhostPort\x12\x18\n" +
-	"\acluster\x18\x02 \x01(\tR\acluster\"3\n" +
+	"\acluster\x18\x02 \x01(\tR\acluster\x12\x1d\n" +
+	"\n" +
+	"login_name\x18\x03 \x01(\tR\tloginName\"3\n" +
 	"\x0eClusterDetails\x12!\n" +
 	"\ffips_enabled\x18\x01 \x01(\bR\vfipsEnabled2s\n" +
 	"\x10TransportService\x12_\n" +

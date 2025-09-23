@@ -89,6 +89,8 @@ message TargetHost {
   string host_port = 1;
   // The cluster the server is a member of
   string cluster = 2;
+  // The OS login name to use when connecting to the host.
+  string login_name = 3;
 }
 
 // ClusterDetails contains cluster configuration information

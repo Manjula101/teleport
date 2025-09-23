@@ -55,13 +55,12 @@ func (c *Client) DialHost(ctx context.Context, hostport, cluster, loginName stri
 		return nil, nil, trace.Wrap(err, "unable to establish proxy stream")
 	}
 
-	// TODO(cthach): Wait to see if MFA is required and if so handle it.
-
 	if err := stream.Send(&transportv2pb.ProxySSHRequest{
 		Payload: &transportv2pb.ProxySSHRequest_DialTarget{
 			DialTarget: &transportv2pb.TargetHost{
-				HostPort: hostport,
-				Cluster:  cluster,
+				HostPort:  hostport,
+				Cluster:   cluster,
+				LoginName: loginName,
 			},
 		},
 	}); err != nil {

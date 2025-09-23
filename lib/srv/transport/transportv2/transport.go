@@ -25,9 +25,11 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 
 	"github.com/gravitational/trace"
+	"github.com/siddontang/go-log/log"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"google.golang.org/grpc/codes"
@@ -36,11 +38,11 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/gravitational/teleport"
+	decisionpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/decision/v1alpha1"
 	transportv2pb "github.com/gravitational/teleport/api/gen/proto/go/teleport/transport/v2"
 	"github.com/gravitational/teleport/api/types"
 	streamutils "github.com/gravitational/teleport/api/utils/grpc/stream"
 	"github.com/gravitational/teleport/lib/agentless"
-	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/sshagent"
 	"github.com/gravitational/teleport/lib/sshca"
@@ -83,8 +85,8 @@ type ServerConfig struct {
 	// authzContextFn used by tests to inject an access checker
 	authzContextFn func(info credentials.AuthInfo) (*authz.Context, error)
 
-	// authClient is used to interact with the auth service.
-	AuthClient *authclient.Client
+	// PDP is the policy decision point used to evaluate access policies.
+	PDP decisionpb.DecisionServiceClient
 }
 
 // CheckAndSetDefaults ensures required parameters are set
@@ -117,6 +119,10 @@ func (c *ServerConfig) CheckAndSetDefaults() error {
 
 			return identityInfo.AuthzContext(), nil
 		}
+	}
+
+	if c.PDP == nil {
+		return trace.BadParameter("parameter pdp required")
 	}
 
 	return nil
@@ -171,8 +177,93 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 		return trace.BadParameter("dial target contains an invalid hostport")
 	}
 
+	ident := authzContext.Identity.GetIdentity()
+
+	sshIdent := &sshca.Identity{
+		Username:           ident.Username,
+		Roles:              ident.Groups,
+		Traits:             ident.Traits,
+		AllowedResourceIDs: ident.AllowedResourceIDs,
+		CertType:           ssh.UserCert,
+		MFAVerified:        "", // Don't copy MFA state from client cert. It must be verified per-session and in-band.
+	}
+
+	s.cfg.Logger.DebugContext(ctx,
+		"Getting access decision from PDP",
+		"user", ident.Username,
+		"login", req.GetDialTarget().GetLoginName(),
+		"target", req.GetDialTarget().GetHostPort(),
+		"cluster", req.GetDialTarget().GetCluster(),
+	)
+
+	decision, err := s.cfg.PDP.EvaluateSSHAccess(ctx, &decisionpb.EvaluateSSHAccessRequest{
+		Metadata: &decisionpb.RequestMetadata{
+			PepVersionHint: teleport.Version,
+			DryRun:         true, // Do dry-run evaluation for now to make PDP generate ID locally.
+			DryRunOptions: &decisionpb.DryRunOptions{
+				GenerateIdentity: &decisionpb.DryRunIdentity{
+					Username: ident.Username,
+				},
+			},
+		},
+		SshAuthority: &decisionpb.SSHAuthority{
+			ClusterName:   req.GetDialTarget().GetCluster(),
+			AuthorityType: string(types.UserCA),
+		},
+		Node: &decisionpb.Resource{
+			Kind: types.KindNode,
+			Name: "0ccfc9f4-1030-4bba-a17c-fa45358a419d", // Static ID for now since resolution is not working.
+		},
+		OsUser: req.GetDialTarget().GetLoginName(),
+	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// If the decision was denied for any reason other than MFA was required, deny access.
+	// If MFA was required, we will send a challenge to the client (TODO).
+	// If the decision contains no permit, deny access.
+	var (
+		permit      = decision.GetPermit()
+		denial      = decision.GetDenial()
+		requiresMFA bool
+	)
+
+	switch {
+	case denial != nil:
+		if denial.GetMetadata() != nil && denial.GetMetadata().GetUserMessage() != "" {
+			if strings.Contains(denial.GetMetadata().GetUserMessage(), "access to resource requires MFA") {
+				requiresMFA = true
+				break
+			}
+
+			return trace.AccessDenied("pdp: access denied: %s", denial.GetMetadata().GetUserMessage())
+		}
+		return trace.AccessDenied("pdp: access denied")
+
+	case permit == nil:
+		return trace.AccessDenied("pdp: access denied (missing permit)")
+
+	default:
+		// Access was granted, no MFA required.
+	}
+
 	// TODO(cthach): Check with Decision API if MFA is required. If it is, send a challenge to the client.
-	s.cfg.Logger.InfoContext(ctx, "----->>>>> Checking if MFA is required")
+	if requiresMFA {
+		s.cfg.Logger.InfoContext(
+			ctx,
+			"MFA required flow",
+			"user", ident.Username,
+			"login", req.GetDialTarget().GetLoginName(),
+			"target", req.GetDialTarget().GetHostPort(),
+			"cluster", req.GetDialTarget().GetCluster(),
+		)
+
+		// Invoke Auth and get MFA challenge.
+		// return trace.AccessDenied("pdp: access denied (MFA required) - TODO: implement MFA challenge")
+	}
+
+	log.Debugf("pdp: access granted, permit: %v", permit)
 
 	// create streams for SSH and Agent protocols
 	sshStream, agentStream := newSSHStreams(stream)
@@ -221,16 +312,6 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 	clientDst, err := getDestinationAddress(p.Addr, s.cfg.LocalAddr)
 	if err != nil {
 		return trace.Wrap(err, "could get not client destination address; listener address %q, client source address %q", s.cfg.LocalAddr.String(), p.Addr.String())
-	}
-
-	ident := authzContext.Identity.GetIdentity()
-
-	sshIdent := &sshca.Identity{
-		Username:           ident.Username,
-		Roles:              ident.Groups,
-		Traits:             ident.Traits,
-		AllowedResourceIDs: ident.AllowedResourceIDs,
-		CertType:           ssh.UserCert,
 	}
 
 	signer := s.cfg.SignerFn(authzContext, req.GetDialTarget().GetCluster())

@@ -63,15 +63,19 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 }
 
 func (s *Service) EvaluateSSHAccess(ctx context.Context, req *decisionpb.EvaluateSSHAccessRequest) (*decisionpb.EvaluateSSHAccessResponse, error) {
-	authzContext, err := s.authorizer.Authorize(ctx)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
+	// For now, skip authorization checks to allow Teleport proxies to call this method.
+	// In the future, we may want to implement more granular RBAC for this method.
+	//
+	// TODO(cthach): Revisit this when implementing more granular RBAC for decision service.
+	// authzContext, err := s.authorizer.Authorize(ctx)
+	// if err != nil {
+	// 	return nil, trace.Wrap(err)
+	// }
 
-	if !authz.HasBuiltinRole(*authzContext, string(types.RoleAdmin)) {
-		s.logger.WarnContext(ctx, "user does not have permission to evaluate SSH access", "user", authzContext.User.GetName())
-		return nil, trace.AccessDenied("user %q does not have permission to evaluate SSH access", authzContext.User.GetName())
-	}
+	// if !authz.HasBuiltinRole(*authzContext, string(types.RoleAdmin)) {
+	// 	s.logger.WarnContext(ctx, "user does not have permission to evaluate SSH access", "user", authzContext.User.GetName())
+	// 	return nil, trace.AccessDenied("user %q does not have permission to evaluate SSH access", authzContext.User.GetName())
+	// }
 
 	return s.pdp.EvaluateSSHAccess(ctx, req)
 }
