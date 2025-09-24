@@ -91,7 +91,7 @@ func (c *gitSSHCommand) run(cf *CLIConf) (err error) {
 	}
 	tc.Stdin = os.Stdin
 	err = client.RetryWithRelogin(cf.Context, tc, func() error {
-		return tc.SSH(cf.Context, cf.RemoteCommand)
+		return tc.SSH(cf.Context, nil, cf.RemoteCommand)
 	})
 	return trace.Wrap(convertSSHExitCode(tc, err))
 }

@@ -339,7 +339,7 @@ func TestClient_DialHost(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			conn, details, err := pack.Client.DialHost(context.Background(), test.target, test.cluster, "", nil, test.keyring)
+			conn, details, err := pack.Client.DialHost(context.Background(), test.target, test.cluster, "", nil, test.keyring, nil)
 			test.assertion(t, conn, details, err)
 		})
 	}

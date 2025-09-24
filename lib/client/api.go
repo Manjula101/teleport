@@ -1965,7 +1965,12 @@ func WithForkAfterAuthentication(onAuthenticate func() error) func(*SSHOptions) 
 // otherwise runs interactive shell
 //
 // Returns nil if successful, or (possibly) *exec.ExitError
-func (tc *TeleportClient) SSH(ctx context.Context, command []string, opts ...func(*SSHOptions)) error {
+func (tc *TeleportClient) SSH(
+	ctx context.Context,
+	mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error),
+	command []string,
+	opts ...func(*SSHOptions),
+) error {
 	ctx, span := tc.Tracer.Start(
 		ctx,
 		"teleportClient/SSH",
@@ -1987,11 +1992,15 @@ func (tc *TeleportClient) SSH(ctx context.Context, command []string, opts ...fun
 		return trace.BadParameter("proxy server is not specified")
 	}
 
+	fmt.Printf("Connecting to proxy %s...\n", tc.Config.WebProxyAddr)
+
 	clt, err := tc.ConnectToCluster(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 	defer clt.Close()
+
+	fmt.Printf("Connected to proxy %s\n", tc.Config.WebProxyAddr)
 
 	// which nodes are we executing this commands on?
 	nodeAddrs, err := tc.GetTargetNodes(ctx, clt.AuthClient, options)
@@ -2008,17 +2017,22 @@ func (tc *TeleportClient) SSH(ctx context.Context, command []string, opts ...fun
 				Err: trace.BadParameter("fork after authentication not supported for commands on multiple nodes"),
 			}
 		}
-		return tc.runShellOrCommandOnMultipleNodes(ctx, clt, nodeAddrs, command)
+		return tc.runShellOrCommandOnMultipleNodes(ctx, clt, nodeAddrs, command, mfaChallengeFn)
 	}
-	return tc.runShellOrCommandOnSingleNode(ctx, clt, nodeAddrs[0].Addr, command, options)
+
+	fmt.Printf("Connecting to node %s...\n", nodeAddrs[0].Hostname)
+	return tc.runShellOrCommandOnSingleNode(ctx, clt, nodeAddrs[0].Addr, command, options, mfaChallengeFn)
 }
 
 // ConnectToNode attempts to establish a connection to the node resolved to by the provided
-// NodeDetails. Connecting is attempted both with the already provisioned certificates and
-// if per session mfa is required, after completing the mfa ceremony. In the event that both
-// fail the error from the connection attempt with the already provisioned certificates will
-// be returned. The client from whichever attempt succeeds first will be returned.
-func (tc *TeleportClient) ConnectToNode(ctx context.Context, clt *ClusterClient, nodeDetails NodeDetails, user string) (_ *NodeClient, err error) {
+// NodeDetails.
+func (tc *TeleportClient) ConnectToNode(
+	ctx context.Context,
+	clt *ClusterClient,
+	nodeDetails NodeDetails,
+	user string,
+	mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error),
+) (_ *NodeClient, err error) {
 	node := nodeName(TargetNode{Addr: nodeDetails.Addr})
 	ctx, span := tc.Tracer.Start(
 		ctx,
@@ -2031,105 +2045,53 @@ func (tc *TeleportClient) ConnectToNode(ctx context.Context, clt *ClusterClient,
 	)
 	defer func() { apitracing.EndSpan(span, err) }()
 
-	// TODO(cthach): Refactor to use new in-band MFA session establishment APIs.
+	connectCtx, span := tc.Tracer.Start(
+		ctx,
+		"teleportClient/connectToNode",
+		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
+		oteltrace.WithAttributes(
+			attribute.String("cluster", nodeDetails.Cluster),
+			attribute.String("node", node),
+		),
+	)
+	defer span.End()
 
-	// if per-session mfa is required, perform the mfa ceremony to get
-	// new certificates and use them to connect.
-	if nodeDetails.MFACheck != nil && nodeDetails.MFACheck.Required {
-		clt, err := tc.connectToNodeWithMFA(ctx, clt, nodeDetails, user)
-		return clt, trace.Wrap(err)
+	fmt.Printf("ConnectToNode: Connecting to node %s...\n", nodeDetails.hostname)
+
+	conn, details, err := clt.DialHostWithMFA(
+		ctx,
+		nodeDetails.Addr,
+		nodeDetails.Cluster,
+		user,
+		tc.localAgent.ExtendedAgent,
+		mfaChallengeFn,
+	)
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
 
-	type clientRes struct {
-		clt *NodeClient
-		err error
+	fmt.Printf("ConnectToNode: Connected to node %s\n", nodeDetails.hostname)
+
+	sshConfig := clt.ProxyClient.SSHConfig(user)
+
+	nc, err := NewNodeClient(
+		connectCtx,
+		sshConfig,
+		conn,
+		nodeDetails.ProxyFormat(),
+		nodeDetails.Addr,
+		tc,
+		details.FIPS,
+		WithNodeHostname(nodeDetails.hostname), WithSSHLogDir(tc.SSHLogDir),
+	)
+	if err != nil {
+		// conn.Close()
+		return nil, trace.Wrap(err)
 	}
 
-	directResultC := make(chan clientRes, 1)
-	mfaResultC := make(chan clientRes, 1)
+	fmt.Printf("ConnectToNode: new node client %s succeeded: %v\n", nodeDetails.hostname, err)
 
-	// use a child context so the goroutines can terminate the other if they succeed
-	directCtx, directCancel := context.WithCancel(ctx)
-	mfaCtx, mfaCancel := context.WithCancel(ctx)
-	go func() {
-		connectCtx, span := tc.Tracer.Start(
-			directCtx,
-			"teleportClient/connectToNode",
-			oteltrace.WithSpanKind(oteltrace.SpanKindClient),
-			oteltrace.WithAttributes(
-				attribute.String("cluster", nodeDetails.Cluster),
-				attribute.String("node", node),
-			),
-		)
-		defer span.End()
-
-		// Try connecting to the node with the certs we already have. Note that the different context being provided
-		// here is intentional. The underlying stream backing the connection will run for the duration of the session
-		// and cause the current span to have a duration longer than just the initial connection. To avoid this the
-		// parent context is used.
-		conn, details, err := clt.DialHostWithResumption(ctx, nodeDetails.Addr, nodeDetails.Cluster, user, tc.localAgent.ExtendedAgent)
-		if err != nil {
-			directResultC <- clientRes{err: err}
-			return
-		}
-
-		sshConfig := clt.ProxyClient.SSHConfig(user)
-		clt, err := NewNodeClient(connectCtx, sshConfig, conn, nodeDetails.ProxyFormat(), nodeDetails.Addr, tc, details.FIPS,
-			WithNodeHostname(nodeDetails.hostname), WithSSHLogDir(tc.SSHLogDir))
-		directResultC <- clientRes{clt: clt, err: err}
-	}()
-
-	go func() {
-		// try performing mfa and then connecting with the single use certs
-		clt, err := tc.connectToNodeWithMFA(mfaCtx, clt, nodeDetails, user)
-		mfaResultC <- clientRes{clt: clt, err: err}
-	}()
-
-	var directErr, mfaErr error
-	for range 2 {
-		select {
-		case <-ctx.Done():
-			mfaCancel()
-			directCancel()
-			return nil, ctx.Err()
-		case res := <-directResultC:
-			if res.clt != nil {
-				mfaCancel()
-				res.clt.AddCancel(directCancel)
-				return res.clt, nil
-			}
-
-			directErr = res.err
-		case res := <-mfaResultC:
-			if res.clt != nil {
-				directCancel()
-				res.clt.AddCancel(mfaCancel)
-				return res.clt, nil
-			}
-
-			mfaErr = res.err
-		}
-	}
-
-	mfaCancel()
-	directCancel()
-
-	switch {
-	// No MFA errors, return any errors from the direct connection
-	case mfaErr == nil:
-		return nil, trace.Wrap(directErr)
-	// Any direct connection errors other than access denied, which should be returned
-	// if MFA is required, take precedent over MFA errors due to users not having any
-	// enrolled devices.
-	case !trace.IsAccessDenied(directErr) && errors.Is(mfaErr, authclient.ErrNoMFADevices):
-		return nil, trace.Wrap(directErr)
-	case !errors.Is(mfaErr, io.EOF) && // Ignore any errors from MFA due to locks being enforced, the direct error will be friendlier
-		!errors.Is(mfaErr, MFARequiredUnknownErr{}) && // Ignore any failures that occurred before determining if MFA was required
-		!errors.Is(mfaErr, services.ErrSessionMFANotRequired): // Ignore any errors caused by attempting the MFA ceremony when MFA will not grant access
-		return nil, trace.Wrap(mfaErr)
-	default:
-		return nil, trace.Wrap(directErr)
-	}
+	return nc, nil
 }
 
 // MFARequiredUnknownErr indicates that connections to an instance failed
@@ -2215,7 +2177,14 @@ func (tc *TeleportClient) connectToNodeWithMFA(ctx context.Context, clt *Cluster
 	return nodeClient, trace.Wrap(err)
 }
 
-func (tc *TeleportClient) runShellOrCommandOnSingleNode(ctx context.Context, clt *ClusterClient, nodeAddr string, command []string, options SSHOptions) error {
+func (tc *TeleportClient) runShellOrCommandOnSingleNode(
+	ctx context.Context,
+	clt *ClusterClient,
+	nodeAddr string,
+	command []string,
+	options SSHOptions,
+	mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error),
+) error {
 	cluster := clt.ClusterName()
 	ctx, span := tc.Tracer.Start(
 		ctx,
@@ -2228,17 +2197,22 @@ func (tc *TeleportClient) runShellOrCommandOnSingleNode(ctx context.Context, clt
 	)
 	defer span.End()
 
+	fmt.Printf("runShellOrCommandOnSingleNode: Connecting to node %s...\n", nodeAddr)
+
 	nodeClient, err := tc.ConnectToNode(
 		ctx,
 		clt,
 		NodeDetails{Addr: nodeAddr, Cluster: cluster},
 		tc.Config.HostLogin,
+		mfaChallengeFn,
 	)
 	if err != nil {
 		tc.SetExitStatus(1)
 		return trace.Wrap(err)
 	}
 	defer nodeClient.Close()
+
+	fmt.Printf("Connected to node %s\n", nodeAddr)
 
 	if options.OnChildAuthenticate != nil {
 		if err := options.OnChildAuthenticate(); err != nil {
@@ -2290,7 +2264,12 @@ func (tc *TeleportClient) runShellOrCommandOnSingleNode(ctx context.Context, clt
 	return trace.Wrap(nodeClient.RunInteractiveShell(ctx, types.SessionPeerMode, nil, tc.OnChannelRequest, nil))
 }
 
-func (tc *TeleportClient) runShellOrCommandOnMultipleNodes(ctx context.Context, clt *ClusterClient, nodes []TargetNode, command []string) error {
+func (tc *TeleportClient) runShellOrCommandOnMultipleNodes(
+	ctx context.Context,
+	clt *ClusterClient,
+	nodes []TargetNode,
+	command []string,
+	mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error)) error {
 	cluster := clt.ClusterName()
 	nodeAddrs := make([]string, 0, len(nodes))
 	for _, node := range nodes {
@@ -2315,7 +2294,7 @@ func (tc *TeleportClient) runShellOrCommandOnMultipleNodes(ctx context.Context, 
 
 	// Issue "shell" request to the first matching node.
 	fmt.Printf("\x1b[1mWARNING\x1b[0m: Multiple nodes match the label selector, picking first: %q\n", nodeAddrs[0])
-	return tc.runShellOrCommandOnSingleNode(ctx, clt, nodeAddrs[0], nil, SSHOptions{})
+	return tc.runShellOrCommandOnSingleNode(ctx, clt, nodeAddrs[0], nil, SSHOptions{}, mfaChallengeFn)
 }
 
 func (tc *TeleportClient) startPortForwarding(ctx context.Context, nodeClient *NodeClient) error {
@@ -2417,6 +2396,7 @@ func (tc *TeleportClient) Join(ctx context.Context, mode types.SessionParticipan
 		clt,
 		NodeDetails{Addr: session.GetAddress() + ":0", Cluster: clt.ClusterName()},
 		tc.Config.HostLogin,
+		nil,
 	)
 	if err != nil {
 		return trace.Wrap(err)
@@ -2678,6 +2658,7 @@ func (tc *TeleportClient) TransferFiles(ctx context.Context, clt *ClusterClient,
 			Cluster: clt.ClusterName(),
 		},
 		hostLogin,
+		nil,
 	)
 	if err != nil {
 		return trace.Wrap(err)
@@ -3018,6 +2999,7 @@ func (tc *TeleportClient) runCommandOnNodes(ctx context.Context, clt *ClusterCli
 					hostname: node.Hostname,
 				},
 				tc.Config.HostLogin,
+				nil,
 			)
 			if err != nil {
 				// Returning the error here would cancel all the other goroutines, so

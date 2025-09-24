@@ -46,6 +46,7 @@ import (
 	"google.golang.org/grpc"
 
 	apiclient "github.com/gravitational/teleport/api/client"
+	"github.com/gravitational/teleport/api/client/proto"
 	proxyclient "github.com/gravitational/teleport/api/client/proxy"
 	"github.com/gravitational/teleport/api/observability/tracing"
 	"github.com/gravitational/teleport/api/utils/grpc/interceptors"
@@ -842,7 +843,7 @@ func (s *MultiplexerService) String() string {
 }
 
 type hostDialer interface {
-	DialHost(ctx context.Context, target, cluster, loginName string, keyring agent.ExtendedAgent) (net.Conn, proxyclient.ClusterDetails, error)
+	DialHost(ctx context.Context, target, cluster, loginName string, keyring agent.ExtendedAgent, mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error)) (net.Conn, proxyclient.ClusterDetails, error)
 	Close() error
 }
 
@@ -917,7 +918,7 @@ func (s *cyclingHostDialClient) DialHost(ctx context.Context, target, cluster, l
 	}
 	s.mu.Unlock()
 
-	innerConn, details, err := currentClt.clt.DialHost(ctx, target, cluster, loginName, keyring)
+	innerConn, details, err := currentClt.clt.DialHost(ctx, target, cluster, loginName, keyring, nil)
 	if err != nil {
 		currentClt.release()
 		return nil, details, trace.Wrap(err)

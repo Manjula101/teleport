@@ -236,7 +236,7 @@ func (p *Suite) mustConnectToClusterAndRunSSHCommand(t *testing.T, config helper
 
 	cmd := []string{"echo", "hello world"}
 	err = retryutils.RetryStaticFor(deadline, nextIterWaitTime, func() error {
-		err = tc.SSH(context.TODO(), cmd)
+		err = tc.SSH(context.TODO(), nil, cmd)
 		return trace.Wrap(err)
 	})
 	require.NoError(t, err)

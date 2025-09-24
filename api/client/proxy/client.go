@@ -35,6 +35,7 @@ import (
 
 	"github.com/gravitational/teleport/api/breaker"
 	"github.com/gravitational/teleport/api/client"
+	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/client/proxy/transport/transportv1"
 	"github.com/gravitational/teleport/api/client/proxy/transport/transportv2"
 	"github.com/gravitational/teleport/api/defaults"
@@ -509,7 +510,14 @@ func (c *Client) ClientConfig(ctx context.Context, cluster string) (client.Confi
 
 // DialHost establishes a connection to the `target` in cluster named `cluster`. If a keyring
 // is provided it will only be forwarded if proxy recording mode is enabled in the cluster.
-func (c *Client) DialHost(ctx context.Context, target, cluster, loginName string, keyring agent.ExtendedAgent) (net.Conn, ClusterDetails, error) {
+func (c *Client) DialHost(
+	ctx context.Context,
+	target,
+	cluster,
+	loginName string,
+	keyring agent.ExtendedAgent,
+	mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error),
+) (net.Conn, ClusterDetails, error) {
 	// Prefer to use the relay transport if it is configured.
 	// TODO(cthach): Add support for transportv2 relay.
 	switch {
@@ -521,7 +529,7 @@ func (c *Client) DialHost(ctx context.Context, target, cluster, loginName string
 		return conn, ClusterDetails{FIPS: detailsv1.FipsEnabled}, nil
 
 	case c.transport != nil:
-		conn, detailsv2, err := c.transportv2.DialHost(ctx, target, cluster, loginName, nil, keyring)
+		conn, detailsv2, err := c.transportv2.DialHost(ctx, target, cluster, loginName, nil, keyring, mfaChallengeFn)
 		if err != nil {
 			return nil, ClusterDetails{}, trace.ConnectionProblem(err, "failed connecting to host %s in cluster %s via transportv2: %v", target, cluster, err)
 		}

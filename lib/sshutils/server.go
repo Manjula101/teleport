@@ -493,6 +493,8 @@ func (s *Server) HandleConnection(conn net.Conn) {
 }
 
 func (s *Server) HandleStapledConnection(conn net.Conn, permit []byte) {
+	s.logger.Info("HandleStapledConnection: New SSH connection", "remote_addr", conn.RemoteAddr())
+
 	p := new(decisionpb.SSHAccessPermit)
 	if err := proto.Unmarshal(permit, p); err != nil {
 		s.logger.ErrorContext(s.closeContext, "failed to unmarshal SSHAccessPermit", "error", err)
@@ -504,6 +506,8 @@ func (s *Server) HandleStapledConnection(conn net.Conn, permit []byte) {
 }
 
 func (s *Server) handleConnection(conn net.Conn, permit *decisionpb.SSHAccessPermit) {
+	s.logger.Info("handleConnection: New SSH connection", "remote_addr", conn.RemoteAddr())
+
 	if s.ingressReporter != nil {
 		s.ingressReporter.ConnectionAccepted(s.ingressService, conn)
 		defer s.ingressReporter.ConnectionClosed(s.ingressService, conn)
@@ -539,8 +543,14 @@ func (s *Server) handleConnection(conn net.Conn, permit *decisionpb.SSHAccessPer
 	// transmitted and received over the connection.
 	conn = utils.NewTrackingConn(conn)
 
+	s.logger.InfoContext(s.closeContext, "Performing SSH handshake", "remote_addr", conn.RemoteAddr())
+
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, &cfg)
 	if err != nil {
+		s.logger.WarnContext(s.closeContext, "Error during SSH handshake for new SSH conn",
+			"error", err,
+		)
+
 		// Ignore EOF as these are triggered by loadbalancer health checks
 		if !errors.Is(err, io.EOF) {
 			s.logger.WarnContext(s.closeContext, "Error occurred in handshake for new SSH conn",
@@ -551,6 +561,8 @@ func (s *Server) handleConnection(conn net.Conn, permit *decisionpb.SSHAccessPer
 		conn.Close()
 		return
 	}
+
+	s.logger.InfoContext(s.closeContext, "SSH handshake completed", "remote_addr", conn.RemoteAddr(), "client_version", string(sconn.ClientVersion()))
 
 	if s.ingressReporter != nil {
 		s.ingressReporter.ConnectionAuthenticated(s.ingressService, conn)

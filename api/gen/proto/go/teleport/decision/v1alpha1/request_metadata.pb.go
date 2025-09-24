@@ -218,7 +218,9 @@ func (x *DryRunOptions) GetGenerateIdentity() *DryRunIdentity {
 type DryRunIdentity struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Username is the teleport username of the identity to be used.
-	Username      string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// mfa_verified is if MFA was verified.
+	MfaVerified   bool `protobuf:"varint,2,opt,name=mfa_verified,json=mfaVerified,proto3" json:"mfa_verified,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -260,6 +262,13 @@ func (x *DryRunIdentity) GetUsername() string {
 	return ""
 }
 
+func (x *DryRunIdentity) GetMfaVerified() bool {
+	if x != nil {
+		return x.MfaVerified
+	}
+	return false
+}
+
 var File_teleport_decision_v1alpha1_request_metadata_proto protoreflect.FileDescriptor
 
 const file_teleport_decision_v1alpha1_request_metadata_proto_rawDesc = "" +
@@ -271,9 +280,10 @@ const file_teleport_decision_v1alpha1_request_metadata_proto_rawDesc = "" +
 	"\adry_run\x18\x03 \x01(\bR\x06dryRun\x12Q\n" +
 	"\x0fdry_run_options\x18\x04 \x01(\v2).teleport.decision.v1alpha1.DryRunOptionsR\rdryRunOptions\"h\n" +
 	"\rDryRunOptions\x12W\n" +
-	"\x11generate_identity\x18\x01 \x01(\v2*.teleport.decision.v1alpha1.DryRunIdentityR\x10generateIdentity\",\n" +
+	"\x11generate_identity\x18\x01 \x01(\v2*.teleport.decision.v1alpha1.DryRunIdentityR\x10generateIdentity\"O\n" +
 	"\x0eDryRunIdentity\x12\x1a\n" +
-	"\busername\x18\x01 \x01(\tR\busername*3\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12!\n" +
+	"\fmfa_verified\x18\x02 \x01(\bR\vmfaVerified*3\n" +
 	"\x0fDecisionFeature\x12 \n" +
 	"\x1cDECISION_FEATURE_UNSPECIFIED\x10\x00BZZXgithub.com/gravitational/teleport/api/gen/proto/go/teleport/decision/v1alpha1;decisionpbb\x06proto3"
 

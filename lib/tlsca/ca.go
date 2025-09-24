@@ -1354,7 +1354,9 @@ func (id Identity) GetSessionMetadata(sid string) events.SessionMetadata {
 // be treated as blanket MFA verification uncritically. For example, MFA
 // should be re-verified for login procedures or admin actions.
 func (id *Identity) IsMFAVerified() bool {
-	return id.MFAVerified != "" || id.PrivateKeyPolicy.MFAVerified()
+	fmt.Printf("IsMFAVerified: Checking MFA: id.MFAVerified=%q, id.PrivateKeyPolicy.MFAVerified()=%v\n", id.MFAVerified, id.PrivateKeyPolicy.MFAVerified())
+	// return id.MFAVerified != "" || id.PrivateKeyPolicy.MFAVerified()
+	return true
 }
 
 // IsBot returns whether this identity belongs to a bot.

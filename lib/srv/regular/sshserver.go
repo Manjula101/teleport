@@ -879,6 +879,8 @@ func New(
 		return nil, trace.Wrap(err)
 	}
 
+	fmt.Println("@!#@!@#!#@!#!@#@!#@!#@!##!@##! NEW SERVER")
+
 	server, err := sshutils.NewServer(
 		component,
 		addr, s,

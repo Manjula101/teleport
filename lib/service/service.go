@@ -5576,6 +5576,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		ConnectionMonitor: connMonitor,
 		LocalAddr:         listeners.sshGRPC.Addr(),
 		PDP:               conn.Client.DecisionClient(),
+		AccessPoint:       conn.Client,
 	})
 	if err != nil {
 		return trace.Wrap(err)

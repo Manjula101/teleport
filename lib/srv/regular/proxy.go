@@ -257,7 +257,7 @@ func (t *proxySubsys) proxyToHost(ctx context.Context, ch ssh.Channel, clientSrc
 	}
 
 	const noLoginName = ""
-	conn, err := t.router.DialHost(ctx, clientSrcAddr, clientDstAddr, t.host, t.port, t.clusterName, noLoginName, t.ctx.Identity.UnmappedIdentity, t.ctx.Identity.UnstableClusterAccessChecker, aGetter, signer)
+	conn, err := t.router.DialHost(ctx, clientSrcAddr, clientDstAddr, t.host, t.port, t.clusterName, noLoginName, t.ctx.Identity.UnmappedIdentity, t.ctx.Identity.UnstableClusterAccessChecker, aGetter, signer, nil)
 	if err != nil {
 		return trace.Wrap(err)
 	}

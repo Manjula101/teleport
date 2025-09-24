@@ -4047,6 +4047,7 @@ func onSSHLatency(cf *CLIConf) error {
 		clt,
 		client.NodeDetails{Addr: target.Addr, Cluster: tc.SiteName},
 		tc.Config.HostLogin,
+		nil,
 	)
 	if err != nil {
 		tc.SetExitStatus(1)
@@ -4238,6 +4239,14 @@ func onSSH(cf *CLIConf, initFunc ClientInitFunc) error {
 		cf.RemoteCommand = cf.RemoteCommand[1:]
 	}
 
+	// If MFA is required, prompt the user for the second factor.
+	// TODO(cthach): Handle SSO MFA challenges.
+	mfaChallengeFn := func(challenge *proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error) {
+		return tc.NewMFAPrompt().Run(cf.Context, challenge)
+	}
+
+	defer fmt.Printf("Disconnected from %s\n", tc.Host)
+
 	tc.Stdin = cf.Stdin()
 	err = retryWithAccessRequest(cf, tc, func() error {
 		sshFunc := func() error {
@@ -4258,7 +4267,9 @@ func onSSH(cf *CLIConf, initFunc ClientInitFunc) error {
 				}))
 			}
 
-			return tc.SSH(cf.Context, cf.RemoteCommand, opts...)
+			defer fmt.Printf("Connection to %s closed.\n", tc.Host)
+
+			return tc.SSH(cf.Context, mfaChallengeFn, cf.RemoteCommand, opts...)
 		}
 		if !cf.Relogin {
 			err = sshFunc()
@@ -4287,6 +4298,8 @@ func onSSH(cf *CLIConf, initFunc ClientInitFunc) error {
 				fmt.Fprintf(cf.Stderr(), "\n")
 				return trace.Wrap(&common.ExitCodeError{Code: 1})
 			}
+
+			fmt.Fprintf(cf.Stderr(), "onSSH inside error: %s\n", utils.UserMessageFromError(err))
 			return trace.Wrap(err)
 		}
 		return nil
@@ -4295,6 +4308,7 @@ func onSSH(cf *CLIConf, initFunc ClientInitFunc) error {
 		fmt.Sprintf("%s@%s", tc.HostLogin, tc.Host),
 	)
 
+	defer fmt.Printf("onSSH Disconnected from %s\n", tc.Host)
 	// Exit with the same exit status as the failed command.
 	return trace.Wrap(convertSSHExitCode(tc, err))
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/crypto/ssh/agent"
 
+	"github.com/gravitational/teleport/api/client/proto"
 	proxyclient "github.com/gravitational/teleport/api/client/proxy"
 )
 
@@ -54,7 +55,7 @@ type mockHostDialer struct {
 }
 
 func (m *mockHostDialer) DialHost(
-	_ context.Context, _, _, _ string, _ agent.ExtendedAgent,
+	_ context.Context, _, _, _ string, _ agent.ExtendedAgent, _ func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error),
 ) (net.Conn, proxyclient.ClusterDetails, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

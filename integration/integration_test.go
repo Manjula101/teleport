@@ -278,7 +278,7 @@ func testDifferentPinnedIP(t *testing.T, suite *integrationTestSuite) {
 			require.NoError(t, err)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			test.errAssertion(t, cl.SSH(ctx, []string{"echo hi"}))
+			test.errAssertion(t, cl.SSH(ctx, nil, []string{"echo hi"}))
 		})
 	}
 }
@@ -473,7 +473,7 @@ func testAuditOn(t *testing.T, suite *integrationTestSuite) {
 				cl.Stdout = myTerm
 				cl.Stdin = myTerm
 
-				err = cl.SSH(context.TODO(), []string{})
+				err = cl.SSH(context.TODO(), nil, []string{})
 				endC <- err
 			}()
 
@@ -682,7 +682,7 @@ func testInteroperability(t *testing.T, suite *integrationTestSuite) {
 			go func() {
 				// don't check for err, because sometimes this process should fail
 				// with an error and that's what the test is checking for.
-				cl.SSH(context.TODO(), []string{tt.inCommand})
+				cl.SSH(context.TODO(), nil, []string{tt.inCommand})
 				sessionEndC <- true
 			}()
 			err = waitFor(sessionEndC, time.Second*10)
@@ -841,7 +841,7 @@ func testSSHTracker(t *testing.T, suite *integrationTestSuite) {
 	cl.Stdout = personA
 	cl.Stdin = personA
 	personA.Type("\aecho hi\n\r")
-	go cl.SSH(ctx, []string{})
+	go cl.SSH(ctx, nil, []string{})
 
 	condition := func() bool {
 		// verify that the tracker was created
@@ -923,7 +923,7 @@ func testSessionRecordingModes(t *testing.T, suite *integrationTestSuite) {
 			cl.Stdout = term
 			cl.Stdin = term
 
-			errCh <- cl.SSH(ctx, []string{})
+			errCh <- cl.SSH(ctx, nil, []string{})
 		}()
 
 		return term, errCh
@@ -1128,6 +1128,7 @@ func testLeafProxySessionRecording(t *testing.T, suite *integrationTestSuite) {
 					clt,
 					client.NodeDetails{Addr: "leaf-zero:0", Cluster: clt.ClusterName()},
 					tc.Config.HostLogin,
+					nil,
 				)
 				assert.NoError(t, err)
 
@@ -1294,7 +1295,7 @@ func testEscapeSequenceTriggers(t *testing.T, suite *integrationTestSuite) {
 			cl.Stdin = terminal
 			sess := make(chan error)
 			go func() {
-				sess <- cl.SSH(ctx, []string{})
+				sess <- cl.SSH(ctx, nil, []string{})
 			}()
 
 			require.Eventually(t, func() bool {
@@ -1486,6 +1487,7 @@ func testIPPropagation(t *testing.T, suite *integrationTestSuite) {
 			clt,
 			client.NodeDetails{Addr: nodeName, Cluster: clt.ClusterName()},
 			tc.Config.HostLogin,
+			nil,
 		)
 		require.NoError(t, err)
 		defer nodeClient.Close()
@@ -1615,7 +1617,7 @@ func verifySessionJoin(t *testing.T, username string, teleport *helpers.TeleInst
 		cl.Stdin = personA
 		// Person A types something into the terminal (including "exit")
 		personA.Type("\aecho hi\n\r\aexit\n\r\a")
-		sessionA <- cl.SSH(context.TODO(), []string{})
+		sessionA <- cl.SSH(context.TODO(), nil, []string{})
 	}
 
 	// PersonB: wait for a session to become available, then join:
@@ -1706,7 +1708,7 @@ func testShutdown(t *testing.T, suite *integrationTestSuite) {
 				sshCtx, sshCancel := context.WithCancel(context.Background())
 				t.Cleanup(sshCancel)
 				go func() {
-					sshErr <- tc.SSH(sshCtx, nil)
+					sshErr <- tc.SSH(sshCtx, nil, nil)
 					sshCancel()
 				}()
 			},
@@ -1933,7 +1935,7 @@ func testClientIdleConnection(t *testing.T, suite *integrationTestSuite) {
 		// Terminate the session after 2x the idle timeout
 		ctx, cancel := context.WithTimeout(context.Background(), netConfig.GetClientIdleTimeout()*2)
 		defer cancel()
-		sessionErr <- cl.SSH(ctx, nil)
+		sessionErr <- cl.SSH(ctx, nil, nil)
 	}
 
 	go openSession()
@@ -2129,7 +2131,7 @@ func runDisconnectTest(t *testing.T, suite *integrationTestSuite, tc disconnectT
 			cl.Stdout = person
 			cl.Stdin = person
 
-			err = cl.SSH(ctx, []string{})
+			err = cl.SSH(ctx, nil, []string{})
 			select {
 			case <-ctx.Done():
 				// either we timed out, or a different session
@@ -2243,7 +2245,7 @@ func testEnvironmentVariables(t *testing.T, suite *integrationTestSuite) {
 	out := &bytes.Buffer{}
 	tc.Stdout = out
 	tc.Stdin = nil
-	err = tc.SSH(ctx, cmd)
+	err = tc.SSH(ctx, nil, cmd)
 	require.NoError(t, err)
 	output := out.String()
 	require.Contains(t, output, tc.WebProxyAddr)
@@ -2251,7 +2253,7 @@ func testEnvironmentVariables(t *testing.T, suite *integrationTestSuite) {
 	term := NewTerminal(250)
 	tc.Stdout = term
 	tc.Stdin = strings.NewReader(strings.Join(cmd, " ") + "\r\nexit\r\n")
-	err = tc.SSH(ctx, nil)
+	err = tc.SSH(ctx, nil, nil)
 	require.NoError(t, err)
 	output = term.AllOutput()
 	require.Contains(t, output, tc.WebProxyAddr)
@@ -2279,7 +2281,7 @@ func testInvalidLogins(t *testing.T, suite *integrationTestSuite) {
 	})
 	require.NoError(t, err)
 
-	err = tc.SSH(context.Background(), cmd)
+	err = tc.SSH(context.Background(), nil, cmd)
 	require.ErrorIs(t, err, trace.NotFound("failed to dial target host\n\tlooking up remote cluster \"wrong-site\"\n\t\tnot found"))
 }
 
@@ -7863,6 +7865,7 @@ func testModeratedSFTP(t *testing.T, suite *integrationTestSuite) {
 		peerClusterClient,
 		nodeDetails,
 		username,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -8140,6 +8143,7 @@ func testSFTP(t *testing.T, suite *integrationTestSuite) {
 					Cluster: helpers.Site,
 				},
 				suite.Me.Username,
+				nil,
 			)
 			require.NoError(t, err)
 			t.Cleanup(func() {
@@ -8399,6 +8403,7 @@ func testAgentlessConn(t *testing.T, tc, joinTC *client.TeleportClient, node *ty
 			Cluster: tc.SiteName,
 		},
 		tc.Username,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {

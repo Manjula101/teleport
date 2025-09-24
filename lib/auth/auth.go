@@ -4071,6 +4071,13 @@ func (a *Server) CreateAuthenticateChallenge(ctx context.Context, req *proto.Cre
 		if err := validateAndSetScope(challengeExtensions, mfav1.ChallengeScope_CHALLENGE_SCOPE_PASSWORDLESS_LOGIN); err != nil {
 			return nil, trace.Wrap(ErrDone)
 		}
+
+	case *proto.CreateAuthenticateChallengeRequest_ContextProxy:
+		username = req.GetContextProxy().GetUsername()
+		if username == "" {
+			return nil, trace.BadParameter("username not present in request")
+		}
+
 	default: // unset or CreateAuthenticateChallengeRequest_ContextUser.
 
 		// Require that a scope was provided.

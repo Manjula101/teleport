@@ -51,7 +51,7 @@ import (
 type Dialer interface {
 	DialSite(ctx context.Context, cluster string, clientSrcAddr, clientDstAddr net.Addr) (net.Conn, error)
 	DialWindowsDesktop(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, desktopName, cluster string, clusterAccessChecker func(types.RemoteCluster) error) (net.Conn, error)
-	DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, cluster, loginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, singer agentless.SignerCreator) (net.Conn, error)
+	DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, cluster, loginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, singer agentless.SignerCreator, permit []byte) (net.Conn, error)
 }
 
 // ConnectionMonitor monitors authorized connections and terminates them when
@@ -300,7 +300,7 @@ func (s *Service) ProxySSH(stream transportv1pb.TransportService_ProxySSHServer)
 	}
 
 	signer := s.cfg.SignerFn(authzContext, req.DialTarget.Cluster)
-	hostConn, err := s.cfg.Dialer.DialHost(ctx, p.Addr, clientDst, host, port, req.DialTarget.Cluster, req.GetDialTarget().GetLoginName(), sshIdent, authzContext.Checker.CheckAccessToRemoteCluster, s.cfg.agentGetterFn(agentStreamRW), signer)
+	hostConn, err := s.cfg.Dialer.DialHost(ctx, p.Addr, clientDst, host, port, req.DialTarget.Cluster, req.GetDialTarget().GetLoginName(), sshIdent, authzContext.Checker.CheckAccessToRemoteCluster, s.cfg.agentGetterFn(agentStreamRW), signer, nil)
 	if err != nil {
 		// Return ambiguous errors unadorned so that clients can detect them easily.
 		if errors.Is(err, teleport.ErrNodeIsAmbiguous) {

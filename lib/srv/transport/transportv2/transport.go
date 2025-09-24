@@ -29,20 +29,23 @@ import (
 	"sync"
 
 	"github.com/gravitational/trace"
-	"github.com/siddontang/go-log/log"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	google_proto "google.golang.org/protobuf/proto"
 
 	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/api/client/proto"
 	decisionpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/decision/v1alpha1"
+	mfav1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/mfa/v1"
 	transportv2pb "github.com/gravitational/teleport/api/gen/proto/go/teleport/transport/v2"
 	"github.com/gravitational/teleport/api/types"
 	streamutils "github.com/gravitational/teleport/api/utils/grpc/stream"
 	"github.com/gravitational/teleport/lib/agentless"
+	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/sshagent"
 	"github.com/gravitational/teleport/lib/sshca"
@@ -53,7 +56,7 @@ import (
 // Dialer is the interface that groups basic dialing methods.
 type Dialer interface {
 	DialSite(ctx context.Context, cluster string, clientSrcAddr, clientDstAddr net.Addr) (net.Conn, error)
-	DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, cluster, loginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, singer agentless.SignerCreator) (net.Conn, error)
+	DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, cluster, loginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, singer agentless.SignerCreator, permit []byte) (net.Conn, error)
 }
 
 // ConnectionMonitor monitors authorized connections and terminates them when
@@ -87,6 +90,9 @@ type ServerConfig struct {
 
 	// PDP is the policy decision point used to evaluate access policies.
 	PDP decisionpb.DecisionServiceClient
+
+	// AccessPoint is used to fetch resources from the auth server.
+	AccessPoint *authclient.Client
 }
 
 // CheckAndSetDefaults ensures required parameters are set
@@ -123,6 +129,10 @@ func (c *ServerConfig) CheckAndSetDefaults() error {
 
 	if c.PDP == nil {
 		return trace.BadParameter("parameter pdp required")
+	}
+
+	if c.AccessPoint == nil {
+		return trace.BadParameter("parameter AccessPoint required")
 	}
 
 	return nil
@@ -221,8 +231,9 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 	}
 
 	// If the decision was denied for any reason other than MFA was required, deny access.
-	// If MFA was required, we will send a challenge to the client (TODO).
+	// If MFA was required, we will send a challenge to the client.
 	// If the decision contains no permit, deny access.
+	// TODO(cthach): Handle legacy clients that do not support in-band MFA.
 	var (
 		permit      = decision.GetPermit()
 		denial      = decision.GetDenial()
@@ -248,7 +259,6 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 		// Access was granted, no MFA required.
 	}
 
-	// TODO(cthach): Check with Decision API if MFA is required. If it is, send a challenge to the client.
 	if requiresMFA {
 		s.cfg.Logger.InfoContext(
 			ctx,
@@ -260,10 +270,110 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 		)
 
 		// Invoke Auth and get MFA challenge.
-		// return trace.AccessDenied("pdp: access denied (MFA required) - TODO: implement MFA challenge")
+		mfaChallenge, err := s.cfg.AccessPoint.APIClient.CreateAuthenticateChallenge(ctx, &proto.CreateAuthenticateChallengeRequest{
+			Request: &proto.CreateAuthenticateChallengeRequest_ContextProxy{
+				ContextProxy: &proto.ContextProxy{
+					// Username is the name of the user that the proxy is acting on behalf of.
+					Username: ident.Username,
+				},
+			},
+			ChallengeExtensions: &mfav1.ChallengeExtensions{
+				Scope: mfav1.ChallengeScope_CHALLENGE_SCOPE_USER_SESSION,
+			},
+		})
+		if err != nil {
+			return trace.Wrap(err, "failed to create MFA challenge")
+		}
+		s.cfg.Logger.InfoContext(ctx, "MFA challenge created", "user", ident.Username)
+
+		// Send the MFA challenge to the client.
+		if err := stream.Send(&transportv2pb.ProxySSHResponse{
+			Payload: &transportv2pb.ProxySSHResponse_MfaChallenge{
+				MfaChallenge: mfaChallenge,
+			},
+		}); err != nil {
+			return trace.Wrap(err, "failed to send MFA challenge")
+		}
+		s.cfg.Logger.InfoContext(ctx, "MFA challenge sent to client", "user", ident.Username)
+
+		// Wait for the client's MFA response.
+		mfaRespReq, err := stream.Recv()
+		if err != nil {
+			return trace.Wrap(err, "failed receiving MFA response frame")
+		}
+		s.cfg.Logger.InfoContext(ctx, "MFA response frame received", "user", ident.Username)
+
+		mfaResponse := mfaRespReq.GetMfaResponse()
+		if mfaResponse == nil {
+			return trace.BadParameter("expected MFA response frame")
+		}
+		if mfaResponse.GetWebauthn() == nil && mfaResponse.GetSSO() == nil {
+			return trace.BadParameter("MFA response missing required field")
+		}
+
+		// TODO(cthach): Verify the MFA response with Auth. For now, we just log and proceed as if MFA was successful.
+		// In the future, if MFA verification fails, we should return an error here. Note: The Auth server will also
+		// verify the MFA response when issuing a cert, so this is just an early check to avoid dialing the host
+		// unnecessarily.
+		s.cfg.Logger.InfoContext(
+			ctx,
+			"Verified MFA response",
+			"user", ident.Username,
+			"login", req.GetDialTarget().GetLoginName(),
+			"target", req.GetDialTarget().GetHostPort(),
+			"cluster", req.GetDialTarget().GetCluster(),
+		)
+
+		// Get a new permit that reflects the successful MFA verification.
+		decision, err = s.cfg.PDP.EvaluateSSHAccess(ctx, &decisionpb.EvaluateSSHAccessRequest{
+			Metadata: &decisionpb.RequestMetadata{
+				PepVersionHint: teleport.Version,
+				DryRun:         true, // Do dry-run evaluation for now to make PDP generate ID locally.
+				DryRunOptions: &decisionpb.DryRunOptions{
+					GenerateIdentity: &decisionpb.DryRunIdentity{
+						Username:    ident.Username,
+						MfaVerified: true, // TODO(cthach): Actually validate MFA response.
+					},
+				},
+			},
+			SshAuthority: &decisionpb.SSHAuthority{
+				ClusterName:   req.GetDialTarget().GetCluster(),
+				AuthorityType: string(types.UserCA),
+			},
+			Node: &decisionpb.Resource{
+				Kind: types.KindNode,
+				Name: "0ccfc9f4-1030-4bba-a17c-fa45358a419d", // Static ID for now since resolution is not working.
+			},
+			OsUser: req.GetDialTarget().GetLoginName(),
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		permit = decision.GetPermit()
+		denial = decision.GetDenial()
+
+		switch {
+		case denial != nil:
+			if denial.GetMetadata() != nil && denial.GetMetadata().GetUserMessage() != "" {
+				return trace.AccessDenied("pdp: access denied: %s", denial.GetMetadata().GetUserMessage())
+			}
+			return trace.AccessDenied("pdp: access denied")
+
+		case permit == nil:
+			return trace.AccessDenied("pdp: access denied (missing permit)")
+
+		default:
+			// Access was granted!
+		}
 	}
 
-	log.Debugf("pdp: access granted, permit: %v", permit)
+	s.cfg.Logger.InfoContext(ctx, "Access granted with permit",
+		"user", ident.Username,
+		"login", req.GetDialTarget().GetLoginName(),
+		"target", req.GetDialTarget().GetHostPort(),
+		"cluster", req.GetDialTarget().GetCluster(),
+	)
 
 	// create streams for SSH and Agent protocols
 	sshStream, agentStream := newSSHStreams(stream)
@@ -314,6 +424,11 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 		return trace.Wrap(err, "could get not client destination address; listener address %q, client source address %q", s.cfg.LocalAddr.String(), p.Addr.String())
 	}
 
+	permitBytes, err := google_proto.Marshal(permit)
+	if err != nil {
+		return trace.Wrap(err, "failed marshaling permit")
+	}
+
 	signer := s.cfg.SignerFn(authzContext, req.GetDialTarget().GetCluster())
 	hostConn, err := s.cfg.Dialer.DialHost(
 		ctx,
@@ -327,6 +442,7 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 		authzContext.Checker.CheckAccessToRemoteCluster,
 		s.cfg.agentGetterFn(agentStreamRW),
 		signer,
+		permitBytes,
 	)
 	if err != nil {
 		// Return ambiguous errors unadorned so that clients can detect them easily.
@@ -354,6 +470,14 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 		return trace.Wrap(err)
 	}
 
+	s.cfg.Logger.InfoContext(ctx, "Connection established",
+		"from", p.Addr.String(),
+		"to", req.GetDialTarget().GetHostPort(),
+		"cluster", req.GetDialTarget().GetCluster(),
+		"user", ident.Username,
+		"login", req.GetDialTarget().GetLoginName(),
+	)
+
 	// send back the cluster details to alert the other side that
 	// the connection has been established
 	if err := stream.Send(&transportv2pb.ProxySSHResponse{
@@ -363,6 +487,8 @@ func (s *Service) ProxySSH(stream transportv2pb.TransportService_ProxySSHServer)
 	}); err != nil {
 		return trace.Wrap(err, "failed sending cluster details ")
 	}
+
+	s.cfg.Logger.InfoContext(ctx, "Cluster details sent")
 
 	// copy data to/from the host/user
 	err = utils.ProxyConn(monitorCtx, hostConn, userConn)

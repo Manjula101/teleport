@@ -7048,6 +7048,8 @@ func (a *ServerWithRoles) GetAccountRecoveryToken(ctx context.Context, req *prot
 
 // CreateAuthenticateChallenge is implemented by AuthService.CreateAuthenticateChallenge.
 func (a *ServerWithRoles) CreateAuthenticateChallenge(ctx context.Context, req *proto.CreateAuthenticateChallengeRequest) (*proto.MFAAuthenticateChallenge, error) {
+	fmt.Printf("CreateAuthenticateChallenge called with req: %+v\n", req)
+
 	isLocalOrRemoteUser := authz.IsLocalOrRemoteUser(a.context)
 
 	// Run preliminary user checks first.
@@ -7055,6 +7057,7 @@ func (a *ServerWithRoles) CreateAuthenticateChallenge(ctx context.Context, req *
 	case *proto.CreateAuthenticateChallengeRequest_UserCredentials:
 	case *proto.CreateAuthenticateChallengeRequest_RecoveryStartTokenID:
 	case *proto.CreateAuthenticateChallengeRequest_Passwordless:
+	case *proto.CreateAuthenticateChallengeRequest_ContextProxy:
 	default: // nil or *proto.CreateAuthenticateChallengeRequest_ContextUser:
 		if !isLocalOrRemoteUser {
 			return nil, trace.BadParameter("only end users are allowed to issue authentication challenges using ContextUser")

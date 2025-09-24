@@ -64,4 +64,7 @@ message DryRunOptions {
 message DryRunIdentity {
   // Username is the teleport username of the identity to be used.
   string username = 1;
+
+  // mfa_verified is if MFA was verified.
+  bool mfa_verified = 2;
 }

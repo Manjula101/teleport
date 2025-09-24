@@ -197,6 +197,7 @@ func (h *Handler) transferFile(w http.ResponseWriter, r *http.Request, p httprou
 		accessChecker.CheckAccessToRemoteCluster,
 		getAgent,
 		signer,
+		nil,
 	)
 	if err != nil {
 		if errors.Is(err, teleport.ErrNodeIsAmbiguous) {

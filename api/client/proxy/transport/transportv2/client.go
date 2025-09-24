@@ -16,12 +16,14 @@ package transportv2
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 
 	"github.com/gravitational/trace"
 	"golang.org/x/crypto/ssh/agent"
 
+	"github.com/gravitational/teleport/api/client/proto"
 	transportv2pb "github.com/gravitational/teleport/api/gen/proto/go/teleport/transport/v2"
 	streamutils "github.com/gravitational/teleport/api/utils/grpc/stream"
 )
@@ -47,7 +49,15 @@ func NewClient(client transportv2pb.TransportServiceClient) (*Client, error) {
 // DialHost establishes a connection to the instance in the provided cluster that matches
 // the hostport. If a keyring is provided then it will be forwarded to the remote instance.
 // The src address will be used as the LocalAddr of the returned [net.Conn].
-func (c *Client) DialHost(ctx context.Context, hostport, cluster, loginName string, src net.Addr, keyring agent.ExtendedAgent) (net.Conn, *transportv2pb.ClusterDetails, error) {
+func (c *Client) DialHost(
+	ctx context.Context,
+	hostport,
+	cluster,
+	loginName string,
+	src net.Addr,
+	keyring agent.ExtendedAgent,
+	mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error),
+) (net.Conn, *transportv2pb.ClusterDetails, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	stream, err := c.clt.ProxySSH(ctx)
 	if err != nil {
@@ -68,11 +78,56 @@ func (c *Client) DialHost(ctx context.Context, hostport, cluster, loginName stri
 		return nil, nil, trace.Wrap(err, "failed to send dial target request")
 	}
 
+	// log the first response which should either be an MFA challenge
+	fmt.Println("waiting for first response from proxy")
+
 	resp, err := stream.Recv()
 	if err != nil {
 		cancel()
-		return nil, nil, trace.Wrap(err, "failed to receive cluster details response")
+		return nil, nil, trace.Wrap(err, "failed to receive first response")
 	}
+
+	fmt.Printf("received first response from proxy: %T\n", resp.GetPayload())
+
+	// If MFA is required, handle the challenge by invoking the provided callback.
+	switch r := resp.GetPayload().(type) {
+	case *transportv2pb.ProxySSHResponse_MfaChallenge:
+		if mfaChallengeFn == nil {
+			cancel()
+			return nil, nil, trace.BadParameter("MFA challenge received but no challenge handler provided")
+		}
+
+		mfaResponse, err := mfaChallengeFn(r.MfaChallenge)
+		if err != nil {
+			cancel()
+			return nil, nil, trace.Wrap(err, "MFA challenge handler failed")
+		}
+
+		if err := stream.Send(&transportv2pb.ProxySSHRequest{
+			Payload: &transportv2pb.ProxySSHRequest_MfaResponse{
+				MfaResponse: mfaResponse,
+			},
+		}); err != nil {
+			cancel()
+			return nil, nil, trace.Wrap(err, "failed to send MFA response")
+		}
+
+		// If MFA was successful, we should receive the cluster details message next.
+		resp, err = stream.Recv()
+		if err != nil {
+			cancel()
+			return nil, nil, trace.Wrap(err, "failed to receive response after sending MFA response")
+		}
+
+	case *transportv2pb.ProxySSHResponse_Details:
+		// MFA not required, proceed
+
+	default:
+		cancel()
+		return nil, nil, trace.BadParameter("expected challenge or dial result frame, got %T", r)
+	}
+
+	fmt.Printf("received second response from proxy: %T\n", resp.GetPayload())
 
 	// create streams for ssh and agent protocol
 	sshStream, agentStream := newSSHStreams(stream, cancel)
@@ -130,6 +185,8 @@ func (c *Client) DialHost(ctx context.Context, hostport, cluster, loginName stri
 			}
 		}
 	}()
+
+	fmt.Printf("connection established to %s in cluster %s\n", hostport, resp.GetDetails())
 
 	return sshConn, resp.GetDetails(), nil
 }

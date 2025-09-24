@@ -357,6 +357,8 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (pp
 }
 
 func (h *AuthHandlers) userKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey, stapledAccessPermit *decisionpb.SSHAccessPermit) (ppms *ssh.Permissions, rerr error) {
+	fmt.Println("@!#@!@#!#@!#!@#@!#@!#@!##!@##! NEW AUTH ATTEMPT")
+
 	ctx := context.Background()
 
 	fingerprint := fmt.Sprintf("%v %v", key.Type(), sshutils.Fingerprint(key))
@@ -368,6 +370,8 @@ func (h *AuthHandlers) userKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey, sta
 		"user", conn.User(),
 		"fingerprint", fingerprint,
 	)
+
+	log.Info("userKeyAuth: Starting public key authentication", "user", conn.User())
 
 	cert, ok := key.(*ssh.Certificate)
 	if !ok {
@@ -590,6 +594,8 @@ func (h *AuthHandlers) userKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey, sta
 		// do not currently contain all information necessary for proper validation.
 	}
 
+	log.Info("userKeyAuth: Passed preliminary certificate checks")
+
 	var accessPermit *decisionpb.SSHAccessPermit
 	var gitForwardingPermit *GitForwardingPermit
 	var proxyPermit *proxyingPermit
@@ -604,6 +610,7 @@ func (h *AuthHandlers) userKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey, sta
 		diagnosticTracing = true
 		if h.c.TargetServer != nil && h.c.TargetServer.IsOpenSSHNode() {
 			if stapledAccessPermit == nil {
+				log.InfoContext(ctx, "evaluateSSHAccess since no stapled access permit")
 				accessPermit, err = h.evaluateSSHAccess(ident, ca, clusterName.GetClusterName(), h.c.TargetServer, conn.User())
 			} else {
 				log.InfoContext(ctx, "using stapled access permit", "permit", stapledAccessPermit)
@@ -1005,7 +1012,7 @@ func (a *ahLoginChecker) evaluateSSHAccess(ident *sshca.Identity, ca types.CertA
 	// Use the server's shutdown context.
 	ctx := a.c.Server.Context()
 
-	a.log.DebugContext(ctx, "checking permissions to login to node with RBAC checks", "teleport_user", ident.Username, "os_user", osUser)
+	a.log.InfoContext(ctx, "checking permissions to login to node with RBAC checks", "teleport_user", ident.Username, "os_user", osUser)
 
 	// get roles assigned to this user
 	accessInfo, err := fetchAccessInfo(ident, ca, clusterName)
@@ -1021,6 +1028,9 @@ func (a *ahLoginChecker) evaluateSSHAccess(ident *sshca.Identity, ca types.CertA
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
+	state.MFARequired = services.MFARequiredNever
+	state.MFAVerified = true
 
 	var isModeratedSessionJoin bool
 

@@ -1964,6 +1964,13 @@ message ContextUser {}
 // Passwordless marks requests for passwordless challenges.
 message Passwordless {}
 
+// ContextProxy marks requests that are for the proxy on behalf of an authenticated user.
+// TODO(cthach): This is for PoC only for test purposes and not intended for production use.
+message ContextProxy {
+  // Username is the name of the user that the proxy is acting on behalf of.
+  string Username = 1 [(gogoproto.jsontag) = "username"];
+}
+
 // CreateAuthenticateChallengeRequest is a request for creating MFA authentication challenges for a
 // users mfa devices.
 message CreateAuthenticateChallengeRequest {
@@ -1983,6 +1990,9 @@ message CreateAuthenticateChallengeRequest {
     // Passwordless issues a passwordless challenge (authenticated user not
     // required).
     Passwordless Passwordless = 4 [(gogoproto.jsontag) = "passwordless,omitempty"];
+    // ContextProxy issues a challenge for the proxy on behalf of an authenticated user.
+    // TODO(cthach): This is for PoC only for test purposes and not intended for production use.
+    ContextProxy ContextProxy = 9 [(gogoproto.jsontag) = "context_proxy,omitempty"];
   }
   // MFARequiredCheck, if set, is used to verify if MFA is necessary for the
   // request. It's akin to a call to [AuthService.IsMFARequired].

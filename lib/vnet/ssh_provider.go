@@ -127,7 +127,7 @@ func (p *sshProvider) dialViaProxy(
 	// to the target SSH node, it is not actually forwarded to the target node
 	// and does not prevent the client from forwarding its own agent if
 	// requested.
-	conn, _, err := pclt.DialHost(ctx, target.addr, target.cluster, "TODO: login needed?", agent)
+	conn, _, err := pclt.DialHost(ctx, target.addr, target.cluster, "TODO: login needed?", agent, nil)
 	if err != nil {
 		pclt.Close()
 		return nil, trace.Wrap(err, "dialing target via proxy")

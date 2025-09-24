@@ -233,7 +233,7 @@ func (p *proxyTunnelStrategy) dialNode(t *testing.T) {
 		client.Stdout = output
 
 		cmd := []string{"echo", "hello world"}
-		err = client.SSH(context.Background(), cmd)
+		err = client.SSH(context.Background(), nil, cmd)
 		require.NoError(t, err)
 		require.Equal(t, "hello world\n", output.String())
 	}

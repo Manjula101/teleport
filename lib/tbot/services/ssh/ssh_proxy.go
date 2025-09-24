@@ -176,7 +176,7 @@ func ProxySSH(ctx context.Context, proxyConfig ProxySSHConfig) error {
 		target = net.JoinHostPort(node.GetName(), "0")
 	}
 
-	conn, _, err := pclt.DialHost(ctx, target, cluster, proxyConfig.User, keyring)
+	conn, _, err := pclt.DialHost(ctx, target, cluster, proxyConfig.User, keyring, nil)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -187,7 +187,7 @@ func ProxySSH(ctx context.Context, proxyConfig ProxySSHConfig) error {
 			// we didn't need the agent in the first place
 			var noAgent agent.ExtendedAgent
 			const noLoginName = ""
-			conn, _, err := pclt.DialHost(ctx, net.JoinHostPort(hostID, "0"), cluster, noLoginName, noAgent)
+			conn, _, err := pclt.DialHost(ctx, net.JoinHostPort(hostID, "0"), cluster, noLoginName, noAgent, nil)
 			return conn, err
 		})
 		if err != nil {

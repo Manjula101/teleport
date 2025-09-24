@@ -210,7 +210,7 @@ func (s *SSHConnectionTester) TestConnection(ctx context.Context, req TestConnec
 	ctxWithTimeout, cancelFunc := context.WithTimeout(ctx, req.DialTimeout)
 	defer cancelFunc()
 
-	if err := tc.SSH(ctxWithTimeout, []string{"whoami"}); err != nil {
+	if err := tc.SSH(ctxWithTimeout, nil, []string{"whoami"}); err != nil {
 		return s.handleErrFromSSH(ctx, connectionDiagnosticID, req.SSHPrincipal, err, processStdout, currentUser, req)
 	}
 

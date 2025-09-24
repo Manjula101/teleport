@@ -113,7 +113,7 @@ func (c *ClusterClient) Close() error {
 // if it's not been disabled in the TeleportClient (with a command-line flag,
 // typically).
 func (c *ClusterClient) DialHostWithResumption(ctx context.Context, target, cluster, loginName string, keyring agent.ExtendedAgent) (net.Conn, proxyclient.ClusterDetails, error) {
-	conn, details, err := c.ProxyClient.DialHost(ctx, target, cluster, loginName, keyring)
+	conn, details, err := c.ProxyClient.DialHost(ctx, target, cluster, loginName, keyring, nil)
 	if err != nil {
 		return nil, proxyclient.ClusterDetails{}, trace.Wrap(err)
 	}
@@ -127,7 +127,41 @@ func (c *ClusterClient) DialHostWithResumption(ctx context.Context, target, clus
 		// agent in the first place
 		var noAgent agent.ExtendedAgent
 		const noLoginName = ""
-		conn, _, err := c.ProxyClient.DialHost(ctx, hostID+":0", cluster, noLoginName, noAgent)
+		conn, _, err := c.ProxyClient.DialHost(ctx, hostID+":0", cluster, noLoginName, noAgent, nil)
+		return conn, err
+	})
+	if err != nil {
+		return nil, proxyclient.ClusterDetails{}, trace.Wrap(err)
+	}
+
+	return conn, details, nil
+}
+
+// DialHostWithMFA is [proxyclient.DialHost] called on the underlying [*proxyclient.Client] of the ClusterClient, but
+// with additional logic that performs an MFA ceremony in-band if required by the target node.
+func (c *ClusterClient) DialHostWithMFA(
+	ctx context.Context,
+	target,
+	cluster,
+	loginName string,
+	keyring agent.ExtendedAgent,
+	mfaChallengeFn func(*proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error),
+) (net.Conn, proxyclient.ClusterDetails, error) {
+	conn, details, err := c.ProxyClient.DialHost(ctx, target, cluster, loginName, keyring, mfaChallengeFn)
+	if err != nil {
+		return nil, proxyclient.ClusterDetails{}, trace.Wrap(err)
+	}
+
+	if c.tc.DisableSSHResumption {
+		return conn, details, nil
+	}
+
+	conn, err = resumption.WrapSSHClientConn(ctx, conn, func(ctx context.Context, hostID string) (net.Conn, error) {
+		// if the connection is being resumed it means that we didn't need the
+		// agent in the first place
+		var noAgent agent.ExtendedAgent
+		const noLoginName = ""
+		conn, _, err := c.ProxyClient.DialHost(ctx, hostID+":0", cluster, noLoginName, noAgent, nil)
 		return conn, err
 	})
 	if err != nil {

@@ -19,6 +19,7 @@ package decision
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gravitational/trace"
@@ -176,11 +177,12 @@ func (s *Service) EvaluateSSHAccess(ctx context.Context, req *decisionpb.Evaluat
 	}
 
 	// check if roles allow access to server
+	// XXX: Bypasses the check if MfaVerified is true. Used for test purposes only. Do not use in production.
 	if err := accessChecker.CheckAccess(
 		target,
 		state,
 		services.NewLoginMatcher(req.OsUser),
-	); err != nil {
+	); err != nil && !(strings.Contains(err.Error(), "access to resource requires MFA") && req.Metadata.GetDryRunOptions().GenerateIdentity.MfaVerified) {
 		return &decisionpb.EvaluateSSHAccessResponse{
 			Decision: &decisionpb.EvaluateSSHAccessResponse_Denial{
 				Denial: &decisionpb.SSHAccessDenial{

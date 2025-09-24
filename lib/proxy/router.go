@@ -222,7 +222,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 // DialHost dials the node that matches the provided host, port and cluster. If no matching node
 // is found an error is returned. If more than one matching node is found and the cluster networking
 // configuration is not set to route to the most recent an error is returned.
-func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, clusterName string, maybeLoginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, signer agentless.SignerCreator) (_ net.Conn, err error) {
+func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.Addr, host, port, clusterName string, maybeLoginName string, identity *sshca.Identity, clusterAccessChecker func(types.RemoteCluster) error, agentGetter sshagent.ClientGetter, signer agentless.SignerCreator, permit []byte) (_ net.Conn, err error) {
 	ctx, span := r.tracer.Start(
 		ctx,
 		"router/DialHost",
@@ -301,48 +301,7 @@ func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.
 		}
 	}
 
-	var permitBytes []byte
-
-	// TODO(cthach): Disabled because getting the permit should happen in ProxySSH RPC.
-	// if loginName := maybeLoginName; loginName != "" {
-	// 	// XXX: prototype invocation. extremely problematic. relies on dry run features, does not properly handle
-	// 	// remote users, does not obey cert state, etc. DO NOT MERGE.
-	// 	decision, err := r.pdp.EvaluateSSHAccess(ctx, &decisionpb.EvaluateSSHAccessRequest{
-	// 		Metadata: &decisionpb.RequestMetadata{
-	// 			PepVersionHint: teleport.Version,
-	// 		},
-	// 		SshAuthority: &decisionpb.SSHAuthority{
-	// 			ClusterName:   r.clusterName, // XXX: in real logic, this *must* be derived from signing CA of user identity
-	// 			AuthorityType: string(types.UserCA),
-	// 		},
-	// 		SshIdentity: decision.SSHIdentityFromSSHCA(identity),
-	// 		Node: &decisionpb.Resource{
-	// 			Kind: target.GetKind(),
-	// 			Name: target.GetName(),
-	// 		},
-	// 		OsUser: loginName,
-	// 	})
-	// 	if err != nil {
-	// 		return nil, trace.Wrap(err)
-	// 	}
-
-	// 	if denial := decision.GetDenial(); denial != nil {
-	// 		if denial.Metadata != nil && denial.Metadata.UserMessage != "" {
-	// 			return nil, trace.AccessDenied("pdp: %s", denial.Metadata.UserMessage)
-	// 		}
-	// 		return nil, trace.AccessDenied("pdp: access denied")
-	// 	}
-
-	// 	permit := decision.GetPermit()
-	// 	if permit == nil {
-	// 		return nil, trace.AccessDenied("pdp: access denied (missing permit)")
-	// 	}
-
-	// 	permitBytes, err = proto.Marshal(permit)
-	// 	if err != nil {
-	// 		return nil, trace.Wrap(err)
-	// 	}
-	// }
+	r.log.Info("Dialing host...")
 
 	conn, err := cluster.Dial(reversetunnelclient.DialParams{
 		From:                  clientSrcAddr,
@@ -356,7 +315,7 @@ func (r *Router) DialHost(ctx context.Context, clientSrcAddr, clientDstAddr net.
 		ProxyIDs:              target.GetProxyIDs(),
 		ConnType:              types.NodeTunnel,
 		TargetServer:          target,
-		Permit:                permitBytes,
+		Permit:                permit,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
