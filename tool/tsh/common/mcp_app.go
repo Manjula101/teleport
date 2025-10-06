@@ -471,25 +471,17 @@ func (c *mcpConnectCommand) run() error {
 	}
 	tc.NonInteractive = true
 
-	if c.autoReconnect {
-		return clientmcp.ProxyStdioConnWithAutoReconnect(
-			c.cf.Context,
-			clientmcp.ProxyStdioConnWithAutoReconnectConfig{
-				ClientStdio: utils.CombinedStdio{},
-				DialServer: func(ctx context.Context) (io.ReadWriteCloser, error) {
-					conn, err := tc.DialMCPServer(ctx, c.cf.AppName)
-					return conn, trace.Wrap(err)
-				},
-				MakeReconnectUserMessage: makeMCPReconnectUserMessage,
-			},
-		)
-	}
-
-	serverConn, err := tc.DialMCPServer(c.cf.Context, c.cf.AppName)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	return trace.Wrap(utils.ProxyConn(c.cf.Context, utils.CombinedStdio{}, serverConn))
+	dialer := client.NewMCPServerDialer(tc, c.cf.AppName)
+	return clientmcp.ProxyStdioConn(
+		c.cf.Context,
+		clientmcp.ProxyStdioConnConfig{
+			ClientStdio:              utils.CombinedStdio{},
+			GetApp:                   dialer.GetApp,
+			DialServer:               dialer.Dial,
+			MakeReconnectUserMessage: makeMCPReconnectUserMessage,
+			AutoReconnect:            c.autoReconnect,
+		},
+	)
 }
 
 func makeMCPReconnectUserMessage(err error) string {

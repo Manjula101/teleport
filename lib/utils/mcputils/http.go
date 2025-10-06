@@ -23,13 +23,17 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
+	"sync"
 
 	"github.com/gravitational/trace"
+	mcpclienttransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
@@ -140,4 +144,98 @@ func (r *httpSSEResponseReplacer) Read(p []byte) (int, error) {
 	}
 	r.buf = e.marshal()
 	return r.Read(p)
+}
+
+// HTTPReaderWriter implements MessageWriter and TransportReader for
+// streamable HTTP transport.
+type HTTPReaderWriter struct {
+	mcpTransport   *mcpclienttransport.StreamableHTTP
+	initOnce       sync.Once
+	messagesToRead chan string
+	logger         *slog.Logger
+}
+
+// NewHTTPReaderWriter creates a new HTTPReaderWriter that implements
+// MessageWriter and TransportReader for streamable HTTP transport.
+func NewHTTPReaderWriter(logger *slog.Logger, serverURL string, opts ...mcpclienttransport.StreamableHTTPCOption) (*HTTPReaderWriter, error) {
+	mcpTransport, err := mcpclienttransport.NewStreamableHTTP(serverURL, opts...)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return &HTTPReaderWriter{
+		logger:       logger,
+		mcpTransport: mcpTransport,
+		// Normally only one message at a time. Use a small buffer just in case.
+		messagesToRead: make(chan string, 5),
+	}, nil
+}
+
+func (h *HTTPReaderWriter) sendMessageToRead(msg any) {
+	if data, err := json.Marshal(msg); err != nil {
+		h.logger.WarnContext(context.Background(), "failed to marshal msg", "error", err)
+	} else {
+		h.messagesToRead <- string(data)
+	}
+}
+
+// WriteMessage implements MessageWriter.
+func (h *HTTPReaderWriter) WriteMessage(ctx context.Context, msg mcp.JSONRPCMessage) error {
+	h.initOnce.Do(func() {
+		h.mcpTransport.SetNotificationHandler(func(notification mcp.JSONRPCNotification) {
+			h.sendMessageToRead(notification)
+		})
+		if err := h.mcpTransport.Start(context.TODO()); err != nil {
+			h.logger.WarnContext(ctx, "failed to start mcp transport", "error", err)
+		}
+	})
+
+	switch v := msg.(type) {
+	case *JSONRPCRequest:
+		resp, err := h.mcpTransport.SendRequest(ctx, mcpclienttransport.JSONRPCRequest{
+			JSONRPC: v.JSONRPC,
+			ID:      v.ID,
+			Method:  string(v.Method),
+			Params:  v.Params,
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		h.sendMessageToRead(resp)
+		return nil
+
+	case *JSONRPCNotification:
+		return trace.Wrap(h.mcpTransport.SendNotification(ctx, mcp.JSONRPCNotification{
+			JSONRPC: v.JSONRPC,
+			Notification: mcp.Notification{
+				Method: string(v.Method),
+				Params: mcp.NotificationParams{
+					AdditionalFields: v.Params,
+				},
+			},
+		}))
+
+	default:
+		return trace.BadParameter("unrecognized message type: %T", msg)
+	}
+}
+
+// Type implements TransportReader.
+func (h *HTTPReaderWriter) Type() string {
+	return types.MCPTransportHTTP
+}
+
+// ReadMessage implements TransportReader.
+func (h *HTTPReaderWriter) ReadMessage(ctx context.Context) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case msg := <-h.messagesToRead:
+		return msg, nil
+	}
+}
+
+// Close implements TransportReader.
+func (h *HTTPReaderWriter) Close() error {
+	return trace.Wrap(h.mcpTransport.Close())
 }

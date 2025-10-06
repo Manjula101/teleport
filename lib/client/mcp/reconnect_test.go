@@ -54,7 +54,7 @@ func TestProxyStdioConnWithAutoReconnect(t *testing.T) {
 
 	// Start proxy.
 	go func() {
-		proxyError <- ProxyStdioConnWithAutoReconnect(ctx, ProxyStdioConnWithAutoReconnectConfig{
+		proxyError <- ProxyStdioConn(ctx, ProxyStdioConnConfig{
 			ClientStdio: clientStdioDest,
 			MakeReconnectUserMessage: func(err error) string {
 				return err.Error()

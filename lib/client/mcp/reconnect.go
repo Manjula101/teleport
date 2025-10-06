@@ -23,26 +23,45 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"sync"
 
 	"github.com/gravitational/trace"
+	"github.com/jonboulle/clockwork"
+	mcpclienttransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/utils/mcputils"
 )
 
-// ProxyStdioConnWithAutoReconnectConfig is the config for ProxyStdioConnWithAutoReconnect.
-type ProxyStdioConnWithAutoReconnectConfig struct {
+type RemoteConnector interface {
+	GetApp(context.Context) (types.Application, error)
+	DialMCPServer(context.Context, types.Application) (net.Conn, error)
+}
+
+// ProxyStdioConnConfig is the config for ProxyStdioConn.
+type ProxyStdioConnConfig struct {
 	// ClientStdio is the client stdin and stdout.
 	ClientStdio io.ReadWriteCloser
 	// MakeReconnectUserMessage generates a user-friendly message based on the
 	// error.
 	MakeReconnectUserMessage func(error) string
 	// DialServer makes a new connection to the remote MCP server.
-	DialServer func(context.Context) (io.ReadWriteCloser, error)
+	DialServer func(context.Context) (net.Conn, error)
+	// GetApp returns the MCP application.
+	GetApp func(context.Context) (types.Application, error)
+
 	// Logger is the slog logger.
 	Logger *slog.Logger
+	// Clock is an optoinal clock to override default real time clock
+	Clock clockwork.Clock
+
+	// TODO
+	AutoReconnect bool
 
 	// clientResponseWriter replies to ClientStdio.
 	clientResponseWriter mcputils.MessageWriter
@@ -51,15 +70,20 @@ type ProxyStdioConnWithAutoReconnectConfig struct {
 }
 
 // CheckAndSetDefaults validates the config and sets default values.
-func (cfg *ProxyStdioConnWithAutoReconnectConfig) CheckAndSetDefaults() error {
+func (cfg *ProxyStdioConnConfig) CheckAndSetDefaults() error {
 	if cfg.ClientStdio == nil {
 		return trace.BadParameter("missing ClientStdio")
+	}
+	if cfg.GetApp == nil {
+		return trace.BadParameter("missing GetApp")
 	}
 	if cfg.DialServer == nil {
 		return trace.BadParameter("missing DialServer")
 	}
 	if cfg.MakeReconnectUserMessage == nil {
-		return trace.BadParameter("missing MakeReconnectUserMessage")
+		cfg.MakeReconnectUserMessage = func(err error) string {
+			return err.Error()
+		}
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.With(
@@ -70,12 +94,15 @@ func (cfg *ProxyStdioConnWithAutoReconnectConfig) CheckAndSetDefaults() error {
 	if cfg.clientResponseWriter == nil {
 		cfg.clientResponseWriter = mcputils.NewSyncStdioMessageWriter(cfg.ClientStdio)
 	}
+	if cfg.Clock == nil {
+		cfg.Clock = clockwork.NewRealClock()
+	}
 	return nil
 }
 
-// ProxyStdioConnWithAutoReconnect serves a stdio client with a consistent
+// ProxyStdioConn serves a stdio client with a consistent
 // connection and reconnects to the remote server upon issues.
-func ProxyStdioConnWithAutoReconnect(ctx context.Context, cfg ProxyStdioConnWithAutoReconnectConfig) error {
+func ProxyStdioConn(ctx context.Context, cfg ProxyStdioConnConfig) error {
 	if err := cfg.CheckAndSetDefaults(); err != nil {
 		return trace.Wrap(err)
 	}
@@ -86,6 +113,7 @@ func ProxyStdioConnWithAutoReconnect(ctx context.Context, cfg ProxyStdioConnWith
 	if err != nil {
 		return trace.Wrap(err)
 	}
+	defer serverConn.Close()
 
 	clientRequestReader, err := mcputils.NewMessageReader(mcputils.MessageReaderConfig{
 		Transport:    mcputils.NewStdioReader(cfg.ClientStdio),
@@ -130,22 +158,22 @@ func ProxyStdioConnWithAutoReconnect(ctx context.Context, cfg ProxyStdioConnWith
 }
 
 type serverConnWithAutoReconnect struct {
-	ProxyStdioConnWithAutoReconnectConfig
+	ProxyStdioConnConfig
 	parentCtx context.Context
 
 	mu                  sync.Mutex
 	serverRequestWriter mcputils.MessageWriter
-	replayOnNextConn    bool
+	firstConnectionDone bool
 	initRequest         *mcputils.JSONRPCRequest
 	initResponse        *mcp.InitializeResult
 	initNotification    *mcputils.JSONRPCNotification
 	closeServerConn     func()
 }
 
-func newServerConnWithAutoReconnect(parentCtx context.Context, cfg ProxyStdioConnWithAutoReconnectConfig) (*serverConnWithAutoReconnect, error) {
+func newServerConnWithAutoReconnect(parentCtx context.Context, cfg ProxyStdioConnConfig) (*serverConnWithAutoReconnect, error) {
 	return &serverConnWithAutoReconnect{
-		ProxyStdioConnWithAutoReconnectConfig: cfg,
-		parentCtx:                             parentCtx,
+		ProxyStdioConnConfig: cfg,
+		parentCtx:            parentCtx,
 	}, nil
 }
 
@@ -169,43 +197,83 @@ func (r *serverConnWithAutoReconnect) WriteMessage(ctx context.Context, msg mcp.
 	return trace.Wrap(writer.WriteMessage(ctx, msg))
 }
 
+func (r *serverConnWithAutoReconnect) makeServerTransport(ctx context.Context) (mcputils.TransportReader, mcputils.MessageWriter, error) {
+	r.Logger.InfoContext(ctx, "Making new transport to server")
+	app, err := r.GetApp(ctx)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+
+	switch types.GetMCPServerTransportType(app.GetURI()) {
+	case types.MCPTransportHTTP:
+		transport, err := defaults.Transport()
+		if err != nil {
+			return nil, nil, trace.Wrap(err)
+		}
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return r.DialServer(ctx)
+		}
+		httpReaderWriter, err := mcputils.NewHTTPReaderWriter(
+			r.Logger,
+			"http://localhost", // does not matter
+			mcpclienttransport.WithHTTPBasicClient(&http.Client{
+				Transport: transport,
+			}),
+			mcpclienttransport.WithContinuousListening(),
+		)
+		if err != nil {
+			return nil, nil, trace.Wrap(err)
+		}
+		return httpReaderWriter, httpReaderWriter, nil
+
+	default:
+		serverConn, err := r.DialServer(ctx)
+		if err != nil {
+			return nil, nil, trace.Wrap(err)
+		}
+		return mcputils.NewStdioReader(serverConn),
+			mcputils.NewStdioMessageWriter(serverConn),
+			nil
+	}
+}
+
 func (r *serverConnWithAutoReconnect) getServerRequestWriterLocked(ctx context.Context) (mcputils.MessageWriter, error) {
 	if r.serverRequestWriter != nil {
 		return r.serverRequestWriter, nil
 	}
 
-	r.Logger.InfoContext(ctx, "Connecting to server")
-	serverConn, err := r.DialServer(ctx)
+	if r.firstConnectionDone && !r.AutoReconnect {
+		return nil, trace.Errorf("auto-reconnect disabled")
+	}
+
+	serverTransportReader, serverRequestWriter, err := r.makeServerTransport(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
-	serverStdioReader := mcputils.NewStdioReader(serverConn)
-	serverWriter := mcputils.NewStdioMessageWriter(serverConn)
-	if r.replayOnNextConn {
+	if r.firstConnectionDone {
 		// Replay initialize sequence. Any error here is likely permanent.
-		if err := r.replayInitializeLocked(ctx, serverStdioReader, serverWriter); err != nil {
-			serverConn.Close()
+		if err := r.replayInitializeLocked(ctx, serverTransportReader, serverRequestWriter); err != nil {
+			serverTransportReader.Close()
 			return nil, trace.Wrap(err)
 		}
-		r.serverRequestWriter = serverWriter
+		r.serverRequestWriter = serverRequestWriter
 	} else {
 		r.serverRequestWriter = mcputils.NewMultiMessageWriter(
 			mcputils.MessageWriterFunc(func(ctx context.Context, msg mcp.JSONRPCMessage) error {
 				r.cacheMessageLocked(ctx, msg)
 				return nil
 			}),
-			serverWriter,
+			serverRequestWriter,
 		)
-		r.replayOnNextConn = true
+		r.firstConnectionDone = true
 	}
 
 	// This should never fail as long the correct config is passed in.
 	serverResponseReader, err := mcputils.NewMessageReader(mcputils.MessageReaderConfig{
-		Transport: serverStdioReader,
-		// OnClose is called when server connection is dead.
-		// Teleport Proxy automatically closes the connection when tsh session
-		// is expired.
+		Transport: serverTransportReader,
+		// OnClose is called when server connection is dead or if any handler
+		// fails. Teleport Proxy automatically closes the connection when tsh
+		// session is expired.
 		OnClose: func() {
 			r.Logger.InfoContext(ctx, "Lost server connection, resetting...")
 			r.mu.Lock()
@@ -226,7 +294,7 @@ func (r *serverConnWithAutoReconnect) getServerRequestWriterLocked(ctx context.C
 		},
 	})
 	if err != nil {
-		serverConn.Close()
+		serverTransportReader.Close()
 		return nil, trace.Wrap(err)
 	}
 
