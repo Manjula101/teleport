@@ -430,7 +430,6 @@ func TestAccessListIsMember_NestedRequirements(t *testing.T) {
 	})
 
 	t.Run("cyclic graph, no membership", func(t *testing.T) {
-		t.Skip("cyclic graph not supported yet")
 		firstList := newAccessList(t, "first", clock)
 		secondList := newAccessList(t, "second", clock)
 		thirdList := newAccessList(t, "third", clock)
@@ -473,7 +472,6 @@ func TestAccessListIsMember_NestedRequirements(t *testing.T) {
 	})
 
 	t.Run("cyclic graph, user membership", func(t *testing.T) {
-		t.Skip("cyclic graph not supported yet")
 		firstList := newAccessList(t, "first", clock)
 		secondList := newAccessList(t, "second", clock)
 		thirdList := newAccessList(t, "third", clock)
