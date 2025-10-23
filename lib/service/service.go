@@ -181,6 +181,7 @@ import (
 	procutils "github.com/gravitational/teleport/lib/utils/process"
 	"github.com/gravitational/teleport/lib/versioncontrol/endpoint"
 	uw "github.com/gravitational/teleport/lib/versioncontrol/upgradewindow"
+	libwatcher "github.com/gravitational/teleport/lib/watcher"
 	"github.com/gravitational/teleport/lib/web"
 	webapp "github.com/gravitational/teleport/lib/web/app"
 )
@@ -2573,6 +2574,27 @@ func (process *TeleportProcess) initAuthService() error {
 		if err := c.Start(); err != nil {
 			return trace.Wrap(err)
 		}
+	}
+
+	// We mark the process state as starting until the auth backend is ready.
+	// If cache is enabled, this will wait for the cache to be populated.
+	// We don't want auth to say its ready until its cache is populated,
+	// else a rollout might progress too quickly and cause backend pressure
+	// and outages.
+	{
+		component := teleport.Component(teleport.ComponentAuth, "backend")
+		process.ExpectService(component)
+		process.RegisterFunc("auth.wait-for-event-stream", func() error {
+			if err := libwatcher.WaitForReady(process.ExitContext(), libwatcher.WaitForReadyConfig{
+				Watcher: authServer,
+				Logger:  process.logger.With(teleport.ComponentLabel, component),
+				Clock:   process.Clock,
+			}); err != nil {
+				return trace.Wrap(err)
+			}
+			process.OnHeartbeat(component)(nil)
+			return nil
+		})
 	}
 
 	// Register TLS endpoint of the auth service
