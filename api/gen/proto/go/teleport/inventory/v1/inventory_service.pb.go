@@ -163,12 +163,12 @@ type ListUnifiedInstancesFilter struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// search is a basic string search query which will filter results by name (hostname for instances, bot name for bot instances).
 	Search string `protobuf:"bytes,1,opt,name=search,proto3" json:"search,omitempty"`
-	// advanced_search is an advanced search query using predicate language.
-	AdvancedSearch string `protobuf:"bytes,2,opt,name=advanced_search,json=advancedSearch,proto3" json:"advanced_search,omitempty"`
-	// kinds is the kinds of instances to return. If omitted, both instances and bot instances will be returned.
-	Kinds []string `protobuf:"bytes,3,rep,name=kinds,proto3" json:"kinds,omitempty"`
-	// services is the list of services (system roles) to filter instances by. This filter will never match any bot instances as we do not support
-	// filtering bot instances by services.
+	// search_keywords is a list of search keywords using predicate language to match against resource field values.
+	SearchKeywords string `protobuf:"bytes,2,opt,name=search_keywords,json=searchKeywords,proto3" json:"search_keywords,omitempty"`
+	// instance_types is the types of instances to return. If omitted, both instances and bot instances will be returned.
+	InstanceTypes []string `protobuf:"bytes,3,rep,name=instance_types,json=instanceTypes,proto3" json:"instance_types,omitempty"`
+	// services is the list of services (system roles) to filter instances by. An instance must have one or more of the services here to be returned.
+	// Bot instances are not filterable by services with this API.
 	Services []string `protobuf:"bytes,4,rep,name=services,proto3" json:"services,omitempty"`
 	// updater_groups is the list of updater groups to filter instances by.
 	UpdaterGroups []string `protobuf:"bytes,5,rep,name=updater_groups,json=updaterGroups,proto3" json:"updater_groups,omitempty"`
@@ -215,16 +215,16 @@ func (x *ListUnifiedInstancesFilter) GetSearch() string {
 	return ""
 }
 
-func (x *ListUnifiedInstancesFilter) GetAdvancedSearch() string {
+func (x *ListUnifiedInstancesFilter) GetSearchKeywords() string {
 	if x != nil {
-		return x.AdvancedSearch
+		return x.SearchKeywords
 	}
 	return ""
 }
 
-func (x *ListUnifiedInstancesFilter) GetKinds() []string {
+func (x *ListUnifiedInstancesFilter) GetInstanceTypes() []string {
 	if x != nil {
-		return x.Kinds
+		return x.InstanceTypes
 	}
 	return nil
 }
@@ -347,11 +347,11 @@ const file_teleport_inventory_v1_inventory_service_proto_rawDesc = "" +
 	"\x06filter\x18\x03 \x01(\v21.teleport.inventory.v1.ListUnifiedInstancesFilterR\x06filter\"\x88\x01\n" +
 	"\x1cListUnifiedInstancesResponse\x12@\n" +
 	"\x05items\x18\x01 \x03(\v2*.teleport.inventory.v1.UnifiedInstanceItemR\x05items\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xd4\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xe5\x01\n" +
 	"\x1aListUnifiedInstancesFilter\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\x12'\n" +
-	"\x0fadvanced_search\x18\x02 \x01(\tR\x0eadvancedSearch\x12\x14\n" +
-	"\x05kinds\x18\x03 \x03(\tR\x05kinds\x12\x1a\n" +
+	"\x0fsearch_keywords\x18\x02 \x01(\tR\x0esearchKeywords\x12%\n" +
+	"\x0einstance_types\x18\x03 \x03(\tR\rinstanceTypes\x12\x1a\n" +
 	"\bservices\x18\x04 \x03(\tR\bservices\x12%\n" +
 	"\x0eupdater_groups\x18\x05 \x03(\tR\rupdaterGroups\x12\x1c\n" +
 	"\tupgraders\x18\x06 \x03(\tR\tupgraders\"\x97\x01\n" +

@@ -605,8 +605,8 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 	if startKey == "" {
 		// If no kinds filter is specified or multiple kinds are, start from the beginning.
 		// If we're only filtering for 1 kind, use type index with kind prefix.
-		if req.Filter != nil && len(req.Filter.Kinds) == 1 {
-			kind := req.Filter.Kinds[0]
+		if req.Filter != nil && len(req.Filter.InstanceTypes) == 1 {
+			kind := req.Filter.InstanceTypes[0]
 			startKey = kind + "/"
 		}
 	}
@@ -616,7 +616,7 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 
 	index := inventoryAlphabeticalIndex
 	// Determine if we should use the type index.
-	useTypeIndex := req.Filter != nil && len(req.Filter.Kinds) == 1
+	useTypeIndex := req.Filter != nil && len(req.Filter.InstanceTypes) == 1
 	if useTypeIndex {
 		index = inventoryTypeIndex
 	}
@@ -624,7 +624,7 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 	endKey := ""
 	// Determine the endKey for type filtering
 	if useTypeIndex {
-		kind := req.Filter.Kinds[0]
+		kind := req.Filter.InstanceTypes[0]
 		endKey = kind + "0"
 	}
 

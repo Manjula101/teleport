@@ -334,7 +334,7 @@ func TestInventoryCache(t *testing.T) {
 		instancesOnlyResp, err := inventoryCache.ListUnifiedInstances(ctx, &inventoryv1.ListUnifiedInstancesRequest{
 			PageSize: 100,
 			Filter: &inventoryv1.ListUnifiedInstancesFilter{
-				Kinds: []string{types.KindInstance},
+				InstanceTypes: []string{types.KindInstance},
 			},
 		})
 		require.NoError(t, err)
@@ -343,7 +343,7 @@ func TestInventoryCache(t *testing.T) {
 		botsOnlyResp, err := inventoryCache.ListUnifiedInstances(ctx, &inventoryv1.ListUnifiedInstancesRequest{
 			PageSize: 100,
 			Filter: &inventoryv1.ListUnifiedInstancesFilter{
-				Kinds: []string{types.KindBotInstance},
+				InstanceTypes: []string{types.KindBotInstance},
 			},
 		})
 		require.NoError(t, err)

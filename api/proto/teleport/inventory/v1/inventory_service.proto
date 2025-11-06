@@ -52,12 +52,12 @@ message ListUnifiedInstancesResponse {
 message ListUnifiedInstancesFilter {
   // search is a basic string search query which will filter results by name (hostname for instances, bot name for bot instances).
   string search = 1;
-  // advanced_search is an advanced search query using predicate language.
-  string advanced_search = 2;
-  // kinds is the kinds of instances to return. If omitted, both instances and bot instances will be returned.
-  repeated string kinds = 3;
-  // services is the list of services (system roles) to filter instances by. This filter will never match any bot instances as we do not support
-  // filtering bot instances by services.
+  // search_keywords is a list of search keywords using predicate language to match against resource field values.
+  string search_keywords = 2;
+  // instance_types is the types of instances to return. If omitted, both instances and bot instances will be returned.
+  repeated string instance_types = 3;
+  // services is the list of services (system roles) to filter instances by. An instance must have one or more of the services here to be returned.
+  // Bot instances are not filterable by services with this API.
   repeated string services = 4;
   // updater_groups is the list of updater groups to filter instances by.
   repeated string updater_groups = 5;
