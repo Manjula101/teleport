@@ -76,21 +76,21 @@ func (u *inventoryInstance) getInstanceID() string {
 	if u.isInstance() {
 		return u.instance.GetName()
 	}
-	return u.bot.GetMetadata().GetName()
+	return u.bot.GetSpec().GetInstanceId()
 }
 
-// getHostnameOrBotName returns the friendly name of this instance.
-// For instances, this is the hostname (or instance ID if there is no hostname).
-// For bot instances, this is the bot name.
-func (u *inventoryInstance) getHostnameOrBotName() string {
+// getHostnameOrBotNameAndInstanceId returns the friendly name of this instance.
+// For instances, this is `<hostname>/<instance id>` if hostname is set, otherwise just `<instance id>`.
+// For bot instances, this is `<bot name>/<bot instance id>`.
+func (u *inventoryInstance) getHostnameOrBotNameAndInstanceId() string {
 	if u.isInstance() {
 		if u.instance.GetHostname() != "" {
-			return u.instance.GetHostname()
+			return u.instance.GetHostname() + "/" + u.instance.GetName()
 		}
 		// If no hostname, fall back to the instance ID
 		return u.instance.GetName()
 	}
-	return u.bot.GetSpec().GetBotName()
+	return u.bot.GetSpec().GetBotName() + "/" + u.bot.GetSpec().GetInstanceId()
 }
 
 // getKind returns the resource kind for this instance.
@@ -104,13 +104,13 @@ func (u *inventoryInstance) getKind() string {
 // getAlphabeticalKey returns the composite key for alphabetical sorting.
 // Format: <bot name or hostname>/<instance id>/<kind>
 func (u *inventoryInstance) getAlphabeticalKey() string {
-	return u.getHostnameOrBotName() + "/" + u.getInstanceID() + "/" + u.getKind()
+	return u.getHostnameOrBotNameAndInstanceId() + "/" + u.getKind()
 }
 
 // getTypeKey returns the composite key for sorting by type.
 // Format: <kind>/<bot name or hostname>/<instance id>
 func (u *inventoryInstance) getTypeKey() string {
-	return u.getKind() + "/" + u.getHostnameOrBotName() + "/" + u.getInstanceID()
+	return u.getKind() + "/" + u.getHostnameOrBotNameAndInstanceId()
 }
 
 // getIDKey returns the key for lookup by instance ID.
@@ -403,6 +403,9 @@ func (ic *InventoryCache) getPrimaryCacheSize() int {
 	if ic.cfg.PrimaryCache.collections.windowsDesktops != nil {
 		count += ic.cfg.PrimaryCache.collections.windowsDesktops.store.len()
 	}
+	if ic.cfg.PrimaryCache.collections.botInstances != nil {
+		count += ic.cfg.PrimaryCache.collections.botInstances.store.len()
+	}
 
 	return count
 }
@@ -478,7 +481,7 @@ func (ic *InventoryCache) populateBotInstances(ctx context.Context, limiter *rat
 			}
 		}
 
-		if nextToken == "" {
+		if nextToken == "" || len(botInstances) == 0 {
 			break
 		}
 
