@@ -1593,6 +1593,7 @@ func applyDiscoveryConfig(fc *FileConfig, cfg *servicecfg.Config) error {
 			Integration:       matcher.Integration,
 			KubeAppDiscovery:  matcher.KubeAppDiscovery,
 			SetupAccessForARN: matcher.SetupAccessForARN,
+			AccountIDs:        matcher.AccountIDs,
 		}
 		if err := serviceMatcher.CheckAndSetDefaults(); err != nil {
 			return trace.Wrap(err)

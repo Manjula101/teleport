@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -131,6 +132,8 @@ type Config struct {
 
 	// GetEC2Client gets an AWS EC2 client for the given region.
 	GetEC2Client server.EC2ClientGetter
+	// GetOrganizationsClient gets an AWS Organizations client for the given region.
+	GetOrganizationsClient server.OrganizationsClientGetter
 	// GetSSMClient gets an AWS SSM client for the given region.
 	GetSSMClient func(ctx context.Context, region string, opts ...awsconfig.OptionsFn) (server.SSMClient, error)
 	// IntegrationOnlyCredentials discards any Matcher that don't have an Integration.
@@ -272,6 +275,15 @@ kubernetes matchers are present.`)
 				return nil, trace.Wrap(err)
 			}
 			return ec2.NewFromConfig(cfg), nil
+		}
+	}
+	if c.GetOrganizationsClient == nil {
+		c.GetOrganizationsClient = func(ctx context.Context, region string, opts ...awsconfig.OptionsFn) (organizations.ListAccountsAPIClient, error) {
+			cfg, err := c.getAWSConfig(ctx, region, opts...)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			return organizations.NewFromConfig(cfg), nil
 		}
 	}
 	if c.AWSFetchersClients == nil {
@@ -588,9 +600,10 @@ func (s *Server) initAWSWatchers(matchers []types.AWSMatcher) error {
 	})
 
 	s.staticServerAWSFetchers, err = server.MatchersToEC2InstanceFetchers(s.ctx, server.MatcherToEC2FetcherParams{
-		Matchers:              ec2Matchers,
-		EC2ClientGetter:       s.GetEC2Client,
-		PublicProxyAddrGetter: s.publicProxyAddress,
+		Matchers:                  ec2Matchers,
+		EC2ClientGetter:           s.GetEC2Client,
+		OrganizationsClientGetter: s.GetOrganizationsClient,
+		PublicProxyAddrGetter:     s.publicProxyAddress,
 	})
 	if err != nil {
 		return trace.Wrap(err)
@@ -711,10 +724,11 @@ func (s *Server) awsServerFetchersFromMatchers(ctx context.Context, matchers []t
 	})
 
 	fetchers, err := server.MatchersToEC2InstanceFetchers(ctx, server.MatcherToEC2FetcherParams{
-		Matchers:              serverMatchers,
-		EC2ClientGetter:       s.GetEC2Client,
-		DiscoveryConfigName:   discoveryConfigName,
-		PublicProxyAddrGetter: s.publicProxyAddress,
+		Matchers:                  serverMatchers,
+		EC2ClientGetter:           s.GetEC2Client,
+		OrganizationsClientGetter: s.GetOrganizationsClient,
+		DiscoveryConfigName:       discoveryConfigName,
+		PublicProxyAddrGetter:     s.publicProxyAddress,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)

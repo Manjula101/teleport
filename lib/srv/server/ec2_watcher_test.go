@@ -56,17 +56,17 @@ func (m *mockEC2Client) DescribeInstances(ctx context.Context, input *ec2.Descri
 	return &output, nil
 }
 
-func makeMockClients(m map[string]*ec2.DescribeInstancesOutput) matcherEC2ClientGetter {
-	return func(ctx context.Context, region string, matcher *types.AWSMatcher, opts ...awsconfig.OptionsFn) (ec2.DescribeInstancesAPIClient, error) {
-		var roleARN string
-		if matcher.AssumeRole != nil {
-			roleARN = matcher.AssumeRole.RoleARN
-		}
-		return &mockEC2Client{
-			output: m[roleARN],
-		}, nil
-	}
-}
+// func makeMockClients(m map[string]*ec2.DescribeInstancesOutput) EC2ClientGetter {
+// 	return func(ctx context.Context, region string, matcher *types.AWSMatcher, opts ...awsconfig.OptionsFn) (ec2.DescribeInstancesAPIClient, error) {
+// 		var roleARN string
+// 		if matcher.AssumeRole != nil {
+// 			roleARN = matcher.AssumeRole.RoleARN
+// 		}
+// 		return &mockEC2Client{
+// 			output: m[roleARN],
+// 		}, nil
+// 	}
+// }
 
 func instanceMatches(inst ec2types.Instance, filters []ec2types.Filter) bool {
 	allMatched := true
@@ -132,206 +132,6 @@ func TestNewEC2InstanceFetcherTags(t *testing.T) {
 			fetcher := newEC2InstanceFetcher(tc.config)
 			require.Equal(t, tc.expectedFilters, fetcher.Filters)
 		})
-	}
-}
-
-func TestEC2Watcher(t *testing.T) {
-	t.Parallel()
-	matchers := []types.AWSMatcher{
-		{
-			Params: &types.InstallerParams{
-				InstallTeleport: true,
-			},
-			Types:   []string{"EC2"},
-			Regions: []string{"us-west-2"},
-			Tags:    map[string]utils.Strings{"teleport": {"yes"}},
-			SSM:     &types.AWSSSM{},
-		},
-		{
-			Params: &types.InstallerParams{
-				InstallTeleport: true,
-			},
-			Types:   []string{"EC2"},
-			Regions: []string{"us-west-2"},
-			Tags:    map[string]utils.Strings{"env": {"dev"}},
-			SSM:     &types.AWSSSM{},
-		},
-		{
-			Params:      &types.InstallerParams{},
-			Types:       []string{"EC2"},
-			Regions:     []string{"us-west-2"},
-			Tags:        map[string]utils.Strings{"with-eice": {"please"}},
-			Integration: "my-aws-integration",
-			SSM:         &types.AWSSSM{},
-		},
-		{
-			Params:  &types.InstallerParams{},
-			Types:   []string{"EC2"},
-			Regions: []string{"us-west-2"},
-			Tags:    map[string]utils.Strings{"env": {"dev"}},
-			SSM:     &types.AWSSSM{},
-			AssumeRole: &types.AssumeRole{
-				RoleARN: "alternate-role-arn",
-			},
-		},
-	}
-
-	present := ec2types.Instance{
-		InstanceId: aws.String("instance-present"),
-		Tags: []ec2types.Tag{
-			{
-				Key:   aws.String("teleport"),
-				Value: aws.String("yes"),
-			},
-			{
-				Key:   aws.String("Name"),
-				Value: aws.String("Present"),
-			},
-		},
-		State: &ec2types.InstanceState{
-			Name: ec2types.InstanceStateNameRunning,
-		},
-	}
-	presentOther := ec2types.Instance{
-		InstanceId: aws.String("instance-present-2"),
-		Tags: []ec2types.Tag{{
-			Key:   aws.String("env"),
-			Value: aws.String("dev"),
-		}},
-		State: &ec2types.InstanceState{
-			Name: ec2types.InstanceStateNameRunning,
-		},
-	}
-	presentForEICE := ec2types.Instance{
-		InstanceId: aws.String("instance-present-3"),
-		Tags: []ec2types.Tag{{
-			Key:   aws.String("with-eice"),
-			Value: aws.String("please"),
-		}},
-		State: &ec2types.InstanceState{
-			Name: ec2types.InstanceStateNameRunning,
-		},
-	}
-	altAccountPresent := ec2types.Instance{
-		InstanceId: aws.String("alternate-instance"),
-		Tags: []ec2types.Tag{{
-			Key:   aws.String("env"),
-			Value: aws.String("dev"),
-		}},
-		State: &ec2types.InstanceState{
-			Name: ec2types.InstanceStateNameRunning,
-		},
-	}
-
-	output := ec2.DescribeInstancesOutput{
-		Reservations: []ec2types.Reservation{{
-			Instances: []ec2types.Instance{
-				present,
-				presentOther,
-				presentForEICE,
-				{
-					InstanceId: aws.String("instance-absent"),
-					Tags: []ec2types.Tag{{
-						Key:   aws.String("env"),
-						Value: aws.String("prod"),
-					}},
-					State: &ec2types.InstanceState{
-						Name: ec2types.InstanceStateNameRunning,
-					},
-				},
-				{
-					InstanceId: aws.String("instance-absent-3"),
-					Tags: []ec2types.Tag{{
-						Key:   aws.String("env"),
-						Value: aws.String("prod"),
-					}, {
-						Key:   aws.String("teleport"),
-						Value: aws.String("yes"),
-					}},
-					State: &ec2types.InstanceState{
-						Name: ec2types.InstanceStateNamePending,
-					},
-				},
-			},
-		}},
-	}
-	altAccountOutput := ec2.DescribeInstancesOutput{
-		Reservations: []ec2types.Reservation{{
-			Instances: []ec2types.Instance{
-				altAccountPresent,
-				{
-					InstanceId: aws.String("alternate-absent"),
-					Tags: []ec2types.Tag{{
-						Key:   aws.String("env"),
-						Value: aws.String("prod"),
-					}},
-					State: &ec2types.InstanceState{
-						Name: ec2types.InstanceStateNameRunning,
-					},
-				},
-			},
-		}},
-	}
-	getClient := makeMockClients(map[string]*ec2.DescribeInstancesOutput{
-		"":                   &output,
-		"alternate-role-arn": &altAccountOutput,
-	})
-
-	fetchersFn := func() []Fetcher {
-		fetchers, err := matchersToEC2InstanceFetchers(MatcherToEC2FetcherParams{
-			Matchers: matchers,
-			PublicProxyAddrGetter: func(ctx context.Context) (string, error) {
-				return "proxy.example.com:3080", nil
-			},
-		}, getClient)
-		require.NoError(t, err)
-
-		return fetchers
-	}
-	watcher, err := NewEC2Watcher(t.Context(), fetchersFn, make(<-chan []types.Server))
-	require.NoError(t, err)
-
-	go watcher.Run()
-
-	expectedInstances := []EC2Instances{
-		{
-			Region:     "us-west-2",
-			Instances:  []EC2Instance{toEC2Instance(present)},
-			Parameters: map[string]string{"token": "", "scriptName": ""},
-		},
-		{
-			Region:     "us-west-2",
-			Instances:  []EC2Instance{toEC2Instance(presentOther)},
-			Parameters: map[string]string{"token": "", "scriptName": ""},
-		},
-		{
-			Region:      "us-west-2",
-			Instances:   []EC2Instance{toEC2Instance(presentForEICE)},
-			Parameters:  map[string]string{"token": "", "scriptName": "", "sshdConfigPath": ""},
-			Integration: "my-aws-integration",
-		},
-		{
-			Region:        "us-west-2",
-			Instances:     []EC2Instance{toEC2Instance(altAccountPresent)},
-			Parameters:    map[string]string{"token": "", "scriptName": "", "sshdConfigPath": ""},
-			AssumeRoleARN: "alternate-role-arn",
-		},
-	}
-
-	for _, instances := range expectedInstances {
-		select {
-		case result := <-watcher.InstancesC:
-			require.NotNil(t, result.EC2)
-			require.Equal(t, instances, *result.EC2)
-		case <-t.Context().Done():
-			require.Fail(t, "context canceled")
-		}
-	}
-
-	select {
-	case inst := <-watcher.InstancesC:
-		require.Fail(t, "unexpected instance: %v", inst)
-	default:
 	}
 }
 

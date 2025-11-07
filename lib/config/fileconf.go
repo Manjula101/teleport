@@ -1807,6 +1807,11 @@ type AWSMatcher struct {
 	KubeAppDiscovery bool `yaml:"kube_app_discovery"`
 	// SetupAccessForARN is the role that the discovery service should create EKS Access Entries for.
 	SetupAccessForARN string `yaml:"setup_access_for_arn"`
+	// AccountIDs contain the list of AWS Account IDs to use when assuming an IAM Role.
+	// AssumeRoleARN must be present and have the account ID part set to *.
+	// Using an wildcard (*) as the account ID will enumerate all the Account IDs within the AWS Organization.
+	// The organizations.ListAccounts API must be available to the IAM Role running the discovery service.
+	AccountIDs []string `yaml:"account_ids"`
 }
 
 // InstallParams sets join method to use on discovered nodes

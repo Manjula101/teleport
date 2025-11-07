@@ -24,15 +24,21 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
+	"sync"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/gravitational/trace"
 
 	"github.com/gravitational/teleport"
 	workloadidentityv1pb "github.com/gravitational/teleport/api/gen/proto/go/teleport/workloadidentity/v1"
 	"github.com/gravitational/teleport/api/types"
+	apiutilsaws "github.com/gravitational/teleport/api/utils/aws"
 	"github.com/gravitational/teleport/lib/auth/join/iam"
 	"github.com/gravitational/teleport/lib/join/joinutils"
 	"github.com/gravitational/teleport/lib/join/provision"
@@ -235,12 +241,18 @@ func arnMatches(pattern, arn string) (bool, error) {
 
 // checkIAMAllowRules checks if the given identity matches any of the given
 // allowRules.
-func checkIAMAllowRules(identity *AWSIdentity, allowRules []*types.TokenRule) error {
+func checkIAMAllowRules(identity *AWSIdentity, organizationIDGetter func() string, allowRules []*types.TokenRule) error {
 	for _, rule := range allowRules {
 		// if this rule specifies an AWS account, the identity must match
 		if len(rule.AWSAccount) > 0 {
 			if rule.AWSAccount != identity.Account {
 				// account doesn't match, continue to check the next rule
+				continue
+			}
+		}
+		if rule.AWSOrganizationID != "" {
+			if rule.AWSOrganizationID != organizationIDGetter() {
+				// organization ID doesn't match, continue to check the next rule
 				continue
 			}
 		}
@@ -308,8 +320,48 @@ func CheckIAMRequest(ctx context.Context, params *CheckIAMRequestParams) (*AWSId
 		return nil, trace.Wrap(err, "executing STS request")
 	}
 
+	identityAccountOrganization := sync.OnceValue(func() string {
+		// TODO(marco): re-write this to ensure cache is used and optionally use an integration credentials.
+		awsConfig, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			slog.WarnContext(ctx, "failed to obtain aws config during Join using IAM for an Org",
+				"token_name", params.ProvisionToken.GetName(),
+				"instance_aws_account", identity.Account,
+				"instance_aws_arn", identity.Arn,
+				"error", err.Error(),
+			)
+			return ""
+		}
+		organizationsClient := organizations.NewFromConfig(awsConfig)
+		describeAccountOutput, err := organizationsClient.DescribeAccount(ctx, &organizations.DescribeAccountInput{
+			AccountId: awssdk.String(identity.Account),
+		})
+		if err != nil {
+			slog.WarnContext(ctx, "failed to obtain organization id for account during IAM Join. ensure the auth server has permissions to call organizations:DescribeAccount",
+				"token_name", params.ProvisionToken.GetName(),
+				"instance_aws_account", identity.Account,
+				"instance_aws_arn", identity.Arn,
+				"error", err.Error(),
+			)
+			return ""
+		}
+
+		organizationID, err := apiutilsaws.ParseAccountFromOrganizationsAccountARN(awssdk.ToString(describeAccountOutput.Account.Arn))
+		if err != nil {
+			slog.WarnContext(ctx, "failed to obtain account from organizations.DescribeAccount API",
+				"token_name", params.ProvisionToken.GetName(),
+				"instance_aws_account", identity.Account,
+				"instance_aws_arn", identity.Arn,
+				"error", err.Error(),
+			)
+			return ""
+		}
+
+		return organizationID
+	})
+
 	// check that the node identity matches an allow rule for this token
-	if err := checkIAMAllowRules(identity, params.ProvisionToken.GetAllowRules()); err != nil {
+	if err := checkIAMAllowRules(identity, identityAccountOrganization, params.ProvisionToken.GetAllowRules()); err != nil {
 		// We return the identity since it's "validated" but does not match the
 		// rules. This allows us to include it in a failed join audit event
 		// as additional context to help the user understand why the join failed.
