@@ -35,7 +35,7 @@ import (
 	inventoryv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
 	machineidv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/machineid/v1"
 	"github.com/gravitational/teleport/api/types"
-	"github.com/gravitational/teleport/lib/backend"
+	"github.com/gravitational/teleport/api/utils"
 	"github.com/gravitational/teleport/lib/services"
 )
 
@@ -50,16 +50,18 @@ const (
 type inventoryIndex string
 
 const (
-	// inventoryAlphabeticalIndex sorts instances alphabetically.
-	// Format: <bot name or instance hostname>/<instance id>/<bot_instance|instance>
+	// inventoryAlphabeticalIndex sorts instances by display name (bot name
+	// or instance hostname), unique ID (bot instance ID or instance host ID)
+	// and type ("bot" or "instance").
 	inventoryAlphabeticalIndex inventoryIndex = "alphabetical"
 
-	// inventoryTypeIndex groups instances by type.
-	// Format: <bot_instance|instance>/<bot name or instance hostname>/<instance id>
+	// inventoryTypeIndex sorts instances by type, display name
+	// and unique ID.
 	inventoryTypeIndex inventoryIndex = "type"
 
 	// inventoryIDIndex allows lookup by instance ID.
-	// Format: <instance id>
+	// For instances: <instance id>
+	// For bot instances: <bot name>/<instance id> (composite key for uniqueness)
 	inventoryIDIndex inventoryIndex = "id"
 )
 
@@ -74,31 +76,19 @@ func (u *inventoryInstance) isInstance() bool {
 	return u.instance != nil
 }
 
-// getInstanceID returns the ID of this instance.
+// getInstanceID returns a unique ID for this instance.
+// For instances, this is the instance ID. For bot names, this is `<bot name/><instance id>`.
 func (u *inventoryInstance) getInstanceID() string {
 	if u.isInstance() {
 		return u.instance.GetName()
 	}
-	id := u.bot.GetSpec().GetInstanceId()
+	botName := u.bot.GetSpec().GetBotName()
+	instanceID := u.bot.GetSpec().GetInstanceId()
 	// Fallback to metadata name if instance ID is not set
-	if id == "" {
-		id = u.bot.GetMetadata().GetName()
+	if instanceID == "" {
+		instanceID = u.bot.GetMetadata().GetName()
 	}
-	return id
-}
-
-// getHostnameOrBotNameAndInstanceId returns the friendly name of this instance.
-// For instances, this is `<hostname>/<instance id>` if hostname is set, otherwise just `<instance id>`.
-// For bot instances, this is `<bot name>/<bot instance id>`.
-func (u *inventoryInstance) getHostnameOrBotNameAndInstanceId() string {
-	if u.isInstance() {
-		if u.instance.GetHostname() != "" {
-			return u.instance.GetHostname() + "/" + u.instance.GetName()
-		}
-		// If no hostname, fall back to the instance ID
-		return u.instance.GetName()
-	}
-	return u.bot.GetSpec().GetBotName() + "/" + u.bot.GetSpec().GetInstanceId()
+	return botName + "/" + instanceID
 }
 
 // getKind returns the resource kind for this instance.
@@ -154,10 +144,9 @@ func (u *inventoryInstance) getIDKey() string {
 // clone returns a deep copy of the unified instance.
 func (u *inventoryInstance) clone() *inventoryInstance {
 	if u.isInstance() {
-		copied := *u.instance
-		return &inventoryInstance{instance: &copied}
+		return &inventoryInstance{instance: utils.CloneProtoMsg(u.instance)}
 	}
-	return &inventoryInstance{bot: proto.Clone(u.bot).(*machineidv1.BotInstance)}
+	return &inventoryInstance{bot: proto.CloneOf(u.bot)}
 }
 
 // InventoryCacheConfig holds the configuration parameters for the InventoryCache.
@@ -165,7 +154,8 @@ type InventoryCacheConfig struct {
 	// PrimaryCache is Teleport's primary cache.
 	PrimaryCache *Cache
 
-	Backend backend.Backend
+	// Events is the events service for watching backend events.
+	Events types.Events
 
 	// Inventory is the inventory service.
 	Inventory services.Inventory
@@ -183,8 +173,8 @@ func (c *InventoryCacheConfig) CheckAndSetDefaults() error {
 	if c.PrimaryCache == nil {
 		return trace.BadParameter("missing PrimaryCache")
 	}
-	if c.Backend == nil {
-		return trace.BadParameter("missing Backend")
+	if c.Events == nil {
+		return trace.BadParameter("missing Events")
 	}
 	if c.Inventory == nil {
 		return trace.BadParameter("missing Inventory")
@@ -348,7 +338,7 @@ func (ic *InventoryCache) initializeAndWatch(ctx context.Context) error {
 	}
 
 	// Calculate the rate limit to use.
-	primaryCacheSize := ic.getPrimaryCacheSize()
+	primaryCacheSize := ic.cfg.PrimaryCache.GetCacheSize()
 	readsPerSecond := calculateReadsPerSecond(primaryCacheSize)
 
 	// Populate the cache with teleport instance and bot instances.
@@ -367,33 +357,21 @@ func (ic *InventoryCache) initializeAndWatch(ctx context.Context) error {
 
 // waitForPrimaryCacheInit waits for the primary cache to be initialized.
 func (ic *InventoryCache) waitForPrimaryCacheInit(ctx context.Context) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return trace.Wrap(ctx.Err())
-
-		case <-ticker.C:
-			ic.cfg.PrimaryCache.rw.RLock()
-			ok := ic.cfg.PrimaryCache.ok
-			ic.cfg.PrimaryCache.rw.RUnlock()
-
-			if ok {
-				return nil
-			}
-		}
+	select {
+	case <-ctx.Done():
+		return trace.Wrap(ctx.Err())
+	case <-ic.cfg.PrimaryCache.FirstTimeInit():
+		return nil
 	}
 }
 
-// setupWatcher sets up a backend watcher for instance and bot_instance events.
-func (ic *InventoryCache) setupWatcher(ctx context.Context) (backend.Watcher, error) {
-	watcher, err := ic.cfg.Backend.NewWatcher(ctx, backend.Watch{
+// setupWatcher sets up a watcher for instance and bot_instance events.
+func (ic *InventoryCache) setupWatcher(ctx context.Context) (types.Watcher, error) {
+	watcher, err := ic.cfg.Events.NewWatcher(ctx, types.Watch{
 		Name: "inventory_cache",
-		Prefixes: []backend.Key{
-			backend.NewKey(instancePrefix),
-			backend.NewKey(botInstancePrefix),
+		Kinds: []types.WatchKind{
+			{Kind: types.KindInstance},
+			{Kind: types.KindBotInstance},
 		},
 	})
 	if err != nil {
@@ -403,7 +381,7 @@ func (ic *InventoryCache) setupWatcher(ctx context.Context) (backend.Watcher, er
 }
 
 // waitForWatcherInit waits for the watcher to finish initializing.
-func (ic *InventoryCache) waitForWatcherInit(ctx context.Context, watcher backend.Watcher) error {
+func (ic *InventoryCache) waitForWatcherInit(ctx context.Context, watcher types.Watcher) error {
 	select {
 	case <-ctx.Done():
 		// Context was cancelled
@@ -415,31 +393,6 @@ func (ic *InventoryCache) waitForWatcherInit(ctx context.Context, watcher backen
 		}
 		return nil
 	}
-}
-
-// getPrimaryCacheSize returns the size of the primary cache, based on the number of agents.
-func (ic *InventoryCache) getPrimaryCacheSize() int {
-	count := 0
-	if ic.cfg.PrimaryCache.collections.nodes != nil {
-		count += ic.cfg.PrimaryCache.collections.nodes.store.len()
-	}
-	if ic.cfg.PrimaryCache.collections.apps != nil {
-		count += ic.cfg.PrimaryCache.collections.apps.store.len()
-	}
-	if ic.cfg.PrimaryCache.collections.dbs != nil {
-		count += ic.cfg.PrimaryCache.collections.dbs.store.len()
-	}
-	if ic.cfg.PrimaryCache.collections.kubeClusters != nil {
-		count += ic.cfg.PrimaryCache.collections.kubeClusters.store.len()
-	}
-	if ic.cfg.PrimaryCache.collections.windowsDesktops != nil {
-		count += ic.cfg.PrimaryCache.collections.windowsDesktops.store.len()
-	}
-	if ic.cfg.PrimaryCache.collections.botInstances != nil {
-		count += ic.cfg.PrimaryCache.collections.botInstances.store.len()
-	}
-
-	return count
 }
 
 // populateCache reads teleport and bot instances and populates the cache with rate limiting.
@@ -523,8 +476,8 @@ func (ic *InventoryCache) populateBotInstances(ctx context.Context, limiter *rat
 	return nil
 }
 
-// processEvents processes events from the backend watcher.
-func (ic *InventoryCache) processEvents(ctx context.Context, watcher backend.Watcher) {
+// processEvents processes events from the watcher.
+func (ic *InventoryCache) processEvents(ctx context.Context, watcher types.Watcher) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -538,8 +491,8 @@ func (ic *InventoryCache) processEvents(ctx context.Context, watcher backend.Wat
 	}
 }
 
-// processEvent processes a backend event.
-func (ic *InventoryCache) processEvent(event backend.Event) error {
+// processEvent processes an event from the watcher.
+func (ic *InventoryCache) processEvent(event types.Event) error {
 	switch event.Type {
 	case types.OpPut:
 		return ic.processPutEvent(event)
@@ -552,32 +505,17 @@ func (ic *InventoryCache) processEvent(event backend.Event) error {
 }
 
 // processPutEvent processes an OpPut event.
-func (ic *InventoryCache) processPutEvent(event backend.Event) error {
-	instanceKeyPrefix := backend.NewKey(instancePrefix)
-	botInstanceKeyPrefix := backend.NewKey(botInstancePrefix)
-
-	// If this is a teleport instance
-	if event.Item.Key.HasPrefix(instanceKeyPrefix) {
-		instance := &types.InstanceV1{}
-		if err := instance.Unmarshal(event.Item.Value); err != nil {
-			return trace.Wrap(err)
-		}
-
+func (ic *InventoryCache) processPutEvent(event types.Event) error {
+	switch resource := event.Resource.(type) {
+	case *types.InstanceV1:
 		// Add/update it in the cache
-		ui := &inventoryInstance{instance: instance}
+		ui := &inventoryInstance{instance: resource}
 		if err := ic.store.put(ui); err != nil {
 			return trace.Wrap(err)
 		}
-	}
-
-	// If this is a bot instance
-	if event.Item.Key.HasPrefix(botInstanceKeyPrefix) {
-		botInstance := &machineidv1.BotInstance{}
-		if err := proto.Unmarshal(event.Item.Value, botInstance); err != nil {
-			return trace.Wrap(err)
-		}
-
-		// Add/update it in the cache
+	case types.Resource153UnwrapperT[*machineidv1.BotInstance]:
+		// Handle bot instances wrapped in Resource153ToLegacy adapter
+		botInstance := resource.UnwrapT()
 		ui := &inventoryInstance{bot: botInstance}
 		if err := ic.store.put(ui); err != nil {
 			return trace.Wrap(err)
@@ -588,39 +526,33 @@ func (ic *InventoryCache) processPutEvent(event backend.Event) error {
 }
 
 // processDeleteEvent handles OpDelete events.
-func (ic *InventoryCache) processDeleteEvent(event backend.Event) error {
-	instanceKeyPrefix := backend.NewKey(instancePrefix)
-	botInstanceKeyPrefix := backend.NewKey(botInstancePrefix)
-
-	// If this is a teleport instance
-	if event.Item.Key.HasPrefix(instanceKeyPrefix) {
-		// Extract the instance id from the key
-		keyParts := event.Item.Key.Components()
-		if len(keyParts) == 0 {
-			return trace.BadParameter("invalid instance key: %s", event.Item.Key)
-		}
-		instanceID := keyParts[len(keyParts)-1]
-
+func (ic *InventoryCache) processDeleteEvent(event types.Event) error {
+	// For delete events, the EventsService returns a ResourceHeader
+	switch resource := event.Resource.(type) {
+	case *types.InstanceV1:
 		// Find and remove the instance from the cache.
-		// The ID index uses ordered encoding, so we need to encode the ID
+		instanceID := resource.GetName()
 		encodedID := string(ordered.Encode(instanceID))
 		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
 			ic.store.delete(existing)
 		}
-	}
-
-	// If this is a bot instance.
-	if event.Item.Key.HasPrefix(botInstanceKeyPrefix) {
-		// Extract the instance id from the key
-		keyParts := event.Item.Key.Components()
-		if len(keyParts) == 0 {
-			return trace.BadParameter("invalid bot instance key: %s", event.Item.Key)
+	case *types.ResourceHeader:
+		// For regular instances, use the instance ID directly
+		instanceID := resource.GetName()
+		encodedID := string(ordered.Encode(instanceID))
+		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
+			ic.store.delete(existing)
 		}
-		botInstanceID := keyParts[len(keyParts)-1]
-
-		// Find and remove the bot instance from the cache
-		// The ID index uses ordered encoding, so we need to encode the ID
-		encodedID := string(ordered.Encode(botInstanceID))
+	case types.Resource153UnwrapperT[*machineidv1.BotInstance]:
+		botInstance := resource.UnwrapT()
+		botName := botInstance.GetSpec().GetBotName()
+		instanceID := botInstance.GetSpec().GetInstanceId()
+		// Fallback to metadata name if instance ID is not set
+		if instanceID == "" {
+			instanceID = botInstance.GetMetadata().GetName()
+		}
+		key := botName + "/" + instanceID
+		encodedID := string(ordered.Encode(key))
 		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
 			ic.store.delete(existing)
 		}

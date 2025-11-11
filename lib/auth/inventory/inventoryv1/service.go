@@ -76,17 +76,15 @@ func (s *Service) ListUnifiedInstances(ctx context.Context, req *inventoryv1.Lis
 	// If no kinds are specified, default to all kinds.
 	if req.Filter == nil {
 		req.Filter = &inventoryv1.ListUnifiedInstancesFilter{}
-		req.Filter.Kinds = []string{types.KindInstance, types.KindBotInstance}
-	} else if len(req.Filter.Kinds) == 0 {
-		req.Filter.Kinds = []string{types.KindInstance, types.KindBotInstance}
+		req.Filter.InstanceTypes = []string{types.KindInstance, types.KindBotInstance}
+	} else if len(req.Filter.InstanceTypes) == 0 {
+		req.Filter.InstanceTypes = []string{types.KindInstance, types.KindBotInstance}
 	} else {
-		req.Filter.Kinds = utils.Deduplicate(req.Filter.Kinds)
+		req.Filter.InstanceTypes = utils.Deduplicate(req.Filter.InstanceTypes)
 	}
 
 	// Ensure that the kinds requested align with the user's permissions.
-	// This is a last line of defense because the client should already prevent the user from requesting
-	// kinds they don't have access to (eg. the UI should grey out those options).
-	for _, kind := range req.Filter.Kinds {
+	for _, kind := range req.Filter.InstanceTypes {
 		switch kind {
 		case types.KindInstance:
 			if err := authCtx.CheckAccessToKind(types.KindInstance, types.VerbList, types.VerbRead); err != nil {

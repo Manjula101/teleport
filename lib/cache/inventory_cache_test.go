@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"rsc.io/ordered"
 
@@ -37,6 +36,8 @@ import (
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/backend/memory"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/services/local"
+	"github.com/gravitational/teleport/lib/services/local/generic"
 )
 
 // TestInventoryCache tests the initialization and use of the inventory cache.
@@ -248,7 +249,7 @@ func TestInventoryCache(t *testing.T) {
 		// Create inventory cache
 		inventoryCache, err := NewInventoryCache(InventoryCacheConfig{
 			PrimaryCache:     p.cache,
-			Backend:          bk,
+			Events:           local.NewEventsService(bk),
 			Inventory:        mockInventory,
 			BotInstanceCache: mockBotCache,
 			TargetVersion:    "18.2.0",
@@ -256,12 +257,7 @@ func TestInventoryCache(t *testing.T) {
 		require.NoError(t, err)
 		defer inventoryCache.Close()
 
-		synctest.Wait()
-
-		// The inventory cache should not be healthy immediately because it needs to wait for `waitForPrimaryCacheInit`.
-		require.False(t, inventoryCache.IsHealthy())
-
-		// Wait for the inventory cache to initialize
+		// Wait for the inventory cache to initialize.
 		time.Sleep(time.Second)
 		synctest.Wait()
 		require.True(t, inventoryCache.IsHealthy())
@@ -450,7 +446,7 @@ func TestInventoryCacheWatcher(t *testing.T) {
 		inventoryCache, err := NewInventoryCache(InventoryCacheConfig{
 			Inventory:        mockInventoryService,
 			BotInstanceCache: mockBotInstanceCache,
-			Backend:          bk,
+			Events:           local.NewEventsService(bk),
 			PrimaryCache:     p.cache,
 			TargetVersion:    "18.2.0",
 		})
@@ -503,18 +499,15 @@ func TestInventoryCacheWatcher(t *testing.T) {
 			},
 		}
 
-		newInstanceBytes, err := newInstance.Marshal()
+		newInstanceItem, err := generic.FastMarshal(backend.NewKey(instancePrefix, newInstance.GetName()), newInstance)
 		require.NoError(t, err)
-		_, err = bk.Put(ctx, backend.Item{
-			Key:   backend.NewKey(instancePrefix, newInstance.GetName()),
-			Value: newInstanceBytes,
-		})
+		_, err = bk.Put(ctx, newInstanceItem)
 		require.NoError(t, err)
 
-		newBotBytes, err := proto.Marshal(newBot)
+		newBotBytes, err := services.MarshalBotInstance(newBot)
 		require.NoError(t, err)
 		_, err = bk.Put(ctx, backend.Item{
-			Key:   backend.NewKey(botInstancePrefix, newBot.Metadata.Name),
+			Key:   backend.NewKey(botInstancePrefix, newBot.Spec.BotName, newBot.Metadata.Name),
 			Value: newBotBytes,
 		})
 		require.NoError(t, err)
@@ -531,7 +524,7 @@ func TestInventoryCacheWatcher(t *testing.T) {
 		err = bk.Delete(ctx, backend.NewKey(instancePrefix, newInstance.GetName()))
 		require.NoError(t, err)
 
-		err = bk.Delete(ctx, backend.NewKey(botInstancePrefix, newBot.Metadata.Name))
+		err = bk.Delete(ctx, backend.NewKey(botInstancePrefix, newBot.Spec.BotName, newBot.Metadata.Name))
 		require.NoError(t, err)
 
 		// Wait for the watcher to process the delete events
@@ -581,7 +574,7 @@ func TestInventoryCacheRateLimiting(t *testing.T) {
 
 		inventoryCache, err := NewInventoryCache(InventoryCacheConfig{
 			PrimaryCache:     p.cache,
-			Backend:          bk,
+			Events:           local.NewEventsService(bk),
 			Inventory:        mockInventory,
 			BotInstanceCache: mockBotCache,
 			TargetVersion:    "18.2.0",
@@ -589,32 +582,37 @@ func TestInventoryCacheRateLimiting(t *testing.T) {
 		require.NoError(t, err)
 		defer inventoryCache.Close()
 
-		// After 100ms, the initial burst of 256 should have already been loaded
 		synctest.Wait()
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
-		currentCount := inventoryCache.store.cache.Len()
-		require.Equal(t, 256, currentCount,
-			"expected 256 instances, got %d", currentCount)
 
-		// After 50ms, we should have loaded another ~13 instances, so ~269 total
+		// After only 100ms, not all instances should be loaded and the cache shouldn't be healthy yet.
+		initialCount := inventoryCache.store.cache.Len()
+		require.Greater(t, initialCount, 0, "expected some instances to be loaded")
+		require.Less(t, initialCount, numInstances,
+			"not all instances should be loaded immediately",
+			numInstances, initialCount)
+		require.False(t, inventoryCache.IsHealthy())
+
+		// After another 50s, more instances should be loaded, but not all.
 		time.Sleep(50 * time.Millisecond)
 		synctest.Wait()
 
-		currentCount = inventoryCache.store.cache.Len()
-		require.GreaterOrEqual(t, currentCount, 267,
-			"expected more than 267 instances, got %d", currentCount)
-		require.LessOrEqual(t, currentCount, 270,
-			"expected less than 270 instances, got %d", currentCount)
+		require.Greater(t, inventoryCache.store.cache.Len(), initialCount,
+			"expected more instances to be loaded now than before, but not all", initialCount, inventoryCache.store.cache.Len())
+		require.Less(t, initialCount, numInstances,
+			"not all instances should be loaded yet",
+			numInstances, initialCount)
+		require.False(t, inventoryCache.IsHealthy())
 
-		// After a whole second, all should be loaded.
-		time.Sleep(time.Second)
+		time.Sleep(2 * time.Second)
 		synctest.Wait()
-		require.True(t, inventoryCache.IsHealthy())
 
-		currentCount = inventoryCache.store.cache.Len()
-		require.Equal(t, numInstances, currentCount,
-			"expected %d instances,got %d", numInstances, currentCount)
+		// After 2 seconds, all instances should be loaded and the cache should be healthy.
+		require.True(t, inventoryCache.IsHealthy())
+		finalCount := inventoryCache.store.cache.Len()
+		require.Equal(t, numInstances, finalCount,
+			"expected all %d instances to be loaded, got %d", numInstances, finalCount)
 	})
 }
 

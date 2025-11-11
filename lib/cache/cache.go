@@ -520,6 +520,10 @@ type Cache struct {
 	// fails.
 	initErr error
 
+	// firstTimeInitC is closed on the first successful initialization of the cache
+	firstTimeInitC    chan struct{}
+	firstTimeInitOnce sync.Once
+
 	// ctx is a cache exit context
 	ctx context.Context
 	// cancel triggers exit context closure
@@ -552,10 +556,18 @@ func (c *Cache) setInitError(err error) {
 	})
 
 	if err == nil {
+		c.firstTimeInitOnce.Do(func() {
+			close(c.firstTimeInitC)
+		})
 		cacheHealth.WithLabelValues(c.target).Set(1.0)
 	} else {
 		cacheHealth.WithLabelValues(c.target).Set(0.0)
 	}
+}
+
+// FirstTimeInit returns a channel that is closed when the cachesuccessfully initializes for the first time.
+func (c *Cache) FirstTimeInit() <-chan struct{} {
+	return c.firstTimeInitC
 }
 
 // setReadStatus updates Cache.ok, which determines whether the
@@ -902,6 +914,7 @@ func New(config Config) (*Cache, error) {
 		cancel:                cancel,
 		Config:                config,
 		initC:                 make(chan struct{}),
+		firstTimeInitC:        make(chan struct{}),
 		fnCache:               fnCache,
 		eventsFanout:          fanout,
 		collections:           collections,
@@ -1818,4 +1831,29 @@ func buildListResourcesResponse[T types.ResourceWithLabels](resources iter.Seq[T
 	}
 
 	return &resp, nil
+}
+
+// GetCacheSize returns the combined total number of nodes, apps, dbs, kubes, desktops, and bot instances.
+func (c *Cache) GetCacheSize() int {
+	count := 0
+	if c.collections.nodes != nil {
+		count += c.collections.nodes.store.len()
+	}
+	if c.collections.apps != nil {
+		count += c.collections.apps.store.len()
+	}
+	if c.collections.dbs != nil {
+		count += c.collections.dbs.store.len()
+	}
+	if c.collections.kubeClusters != nil {
+		count += c.collections.kubeClusters.store.len()
+	}
+	if c.collections.windowsDesktops != nil {
+		count += c.collections.windowsDesktops.store.len()
+	}
+	if c.collections.botInstances != nil {
+		count += c.collections.botInstances.store.len()
+	}
+
+	return count
 }

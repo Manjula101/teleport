@@ -30,6 +30,26 @@ service InventoryService {
   rpc ListUnifiedInstances(ListUnifiedInstancesRequest) returns (ListUnifiedInstancesResponse);
 }
 
+// UnifiedInstanceSort specifies the sort mode for listing unified instances.
+enum UnifiedInstanceSort {
+  UNIFIED_INSTANCE_SORT_UNSPECIFIED = 0;
+  // UNIFIED_INSTANCE_SORT_NAME sorts by display name (hostname for instances, bot name for bot instances).
+  UNIFIED_INSTANCE_SORT_NAME = 1;
+  // UNIFIED_INSTANCE_SORT_TYPE sorts by instance type (instance vs bot_instance).
+  UNIFIED_INSTANCE_SORT_TYPE = 2;
+  // UNIFIED_INSTANCE_SORT_VERSION sorts by version.
+  UNIFIED_INSTANCE_SORT_VERSION = 3;
+}
+
+// SortOrder specifies the sort order for listing unified instances.
+enum SortOrder {
+  SORT_ORDER_UNSPECIFIED = 0;
+  // SORT_ORDER_ASCENDING sorts in ascending order.
+  SORT_ORDER_ASCENDING = 1;
+  // SORT_ORDER_DESCENDING sorts in descending order.
+  SORT_ORDER_DESCENDING = 2;
+}
+
 // ListUnifiedInstancesRequest is the request for listing instances.
 message ListUnifiedInstancesRequest {
   // page_size is the size of the page to return.
@@ -38,6 +58,10 @@ message ListUnifiedInstancesRequest {
   string page_token = 2;
   // filter specifies optional search criteria to limit which instances should be returned.
   ListUnifiedInstancesFilter filter = 3;
+  // sort specifies the sort mode for the results. Defaults to UNIFIED_INSTANCE_SORT_NAME.
+  UnifiedInstanceSort sort = 4;
+  // order specifies the sort order for the results. Defaults to SORT_ORDER_ASCENDING.
+  SortOrder order = 5;
 }
 
 // ListUnifiedInstancesResponse is the response from listing instances.
