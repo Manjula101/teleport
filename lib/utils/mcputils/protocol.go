@@ -140,6 +140,22 @@ type JSONRPCRequest struct {
 	Params  JSONRPCParams `json:"params,omitempty"`
 }
 
+// GetInitializeParams returns the parameters for the "initialize" request.
+func (r *JSONRPCRequest) GetInitializeParams() (*mcp.InitializeParams, error) {
+	if r.Method != mcp.MethodInitialize {
+		return nil, trace.BadParameter("expected initialize request, got %v", r.Method)
+	}
+	data, err := json.Marshal(r.Params)
+	if err != nil {
+		return nil, trace.Wrap(err, "marshaling initialize request params")
+	}
+	var params mcp.InitializeParams
+	if err := json.Unmarshal(data, &params); err != nil {
+		return nil, trace.Wrap(err, "unmarshaling initialize request params")
+	}
+	return &params, nil
+}
+
 // JSONRPCResponse defines an MCP response.
 //
 // By protocol spec, responses are further sub-categorized as either successful

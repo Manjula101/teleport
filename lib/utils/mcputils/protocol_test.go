@@ -43,7 +43,7 @@ var (
     }
   }
 }`)
-	sampleRequestJSON = []byte(`{
+	sampleToolsCallRequestJSON = []byte(`{
   "jsonrpc": "2.0",
   "id": 2,
   "method": "tools/call",
@@ -51,6 +51,19 @@ var (
     "name": "get_weather",
     "arguments": {
       "location": "New York"
+    }
+  }
+}`)
+	sampleInitializeRequestJSON = []byte(`{
+  "jsonrpc": "2.0",
+  "id": "some-uuid",
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "ExampleClient",
+      "version": "1.0.0"
     }
   }
 }`)
@@ -98,23 +111,64 @@ func TestJSONRPCNotification(t *testing.T) {
 }
 
 func TestJSONRPCRequest(t *testing.T) {
-	var base BaseJSONRPCMessage
-	require.NoError(t, json.Unmarshal(sampleRequestJSON, &base))
-	assert.False(t, base.IsNotification())
-	assert.True(t, base.IsRequest())
-	assert.False(t, base.IsResponse())
+	tests := []struct {
+		name         string
+		inputJSON    []byte
+		expectMethod mcp.MCPMethod
+		expectID     string
+		extraChecks  func(*testing.T, *JSONRPCRequest)
+	}{
+		{
+			name:         "tools/call",
+			inputJSON:    sampleToolsCallRequestJSON,
+			expectMethod: mcp.MethodToolsCall,
+			expectID:     "int64:2",
+			extraChecks: func(t *testing.T, r *JSONRPCRequest) {
+				t.Helper()
+				name, ok := r.Params.GetName()
+				assert.True(t, ok)
+				assert.Equal(t, "get_weather", name)
+			},
+		},
+		{
+			name:         "initialize",
+			inputJSON:    sampleInitializeRequestJSON,
+			expectMethod: mcp.MethodInitialize,
+			expectID:     "string:some-uuid",
+			extraChecks: func(t *testing.T, r *JSONRPCRequest) {
+				t.Helper()
+				params, err := r.GetInitializeParams()
+				require.NoError(t, err)
+				assert.Equal(t, &mcp.InitializeParams{
+					ProtocolVersion: "2025-06-18",
+					Capabilities:    mcp.ClientCapabilities{},
+					ClientInfo: mcp.Implementation{
+						Name:    "ExampleClient",
+						Version: "1.0.0",
+					},
+				}, params)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var base BaseJSONRPCMessage
+			require.NoError(t, json.Unmarshal(test.inputJSON, &base))
+			assert.False(t, base.IsNotification())
+			assert.True(t, base.IsRequest())
+			assert.False(t, base.IsResponse())
 
-	m := base.MakeRequest()
-	require.NotNil(t, m)
-	assert.Equal(t, mcp.MethodToolsCall, m.Method)
-	assert.Equal(t, "int64:2", m.ID.String())
-	name, ok := m.Params.GetName()
-	assert.True(t, ok)
-	assert.Equal(t, "get_weather", name)
+			m := base.MakeRequest()
+			require.NotNil(t, m)
+			assert.Equal(t, test.expectMethod, m.Method)
+			assert.Equal(t, test.expectID, m.ID.String())
+			test.extraChecks(t, m)
 
-	outputJSON, err := json.MarshalIndent(m, "", "  ")
-	require.NoError(t, err)
-	assert.JSONEq(t, string(sampleRequestJSON), string(outputJSON))
+			outputJSON, err := json.MarshalIndent(m, "", "  ")
+			require.NoError(t, err)
+			assert.JSONEq(t, string(test.inputJSON), string(outputJSON))
+		})
+	}
 }
 
 func TestJSONRPCResponse(t *testing.T) {

@@ -96,18 +96,14 @@ func Test_handleStdio(t *testing.T) {
 		require.NoError(t, handlerErr)
 	}()
 
-	// Use a real client. Verify session start and end events.
+	// Use a real client.
 	stdioClient := mcptest.NewStdioClientFromConn(t, testCtx.clientSourceConn)
-	require.EventuallyWithT(t, func(t *assert.CollectT) {
-		event := emitter.LastEvent()
-		_, ok := event.(*apievents.MCPSessionStart)
-		require.True(t, ok)
-	}, time.Second*5, time.Millisecond*100, "expect session start")
 
 	// Some basic tests on the demo server.
 	resp, err := mcptest.InitializeClient(ctx, stdioClient)
 	require.NoError(t, err)
 	require.Equal(t, "teleport-demo", resp.ServerInfo.Name)
+	checkSessionStartAndInitializeEvents(t, emitter.Events())
 
 	listToolsResult, err := stdioClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)

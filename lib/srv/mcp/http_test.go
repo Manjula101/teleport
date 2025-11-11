@@ -136,6 +136,7 @@ func Test_handleStreamableHTTP(t *testing.T) {
 				libevents.MCPSessionRequestCode, // "tools/call"
 			}, sliceutils.Map(emitter.Events(), getEventCode))
 		}, 2*time.Second, time.Millisecond*100, "waiting for events")
+		checkSessionStartAndInitializeEvents(t, emitter.Events())
 
 		// Close client and wait for end event.
 		require.NoError(t, client.Close())

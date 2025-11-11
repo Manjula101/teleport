@@ -20,8 +20,10 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/gravitational/trace"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -67,6 +69,11 @@ func (c *sessionAuditorConfig) checkAndSetDefaults() error {
 // sessionAuditor handles audit events for a session.
 type sessionAuditor struct {
 	sessionAuditorConfig
+
+	// pendingEvents is used to delay sending session start and initialize
+	// events until more metadata are captured.
+	pendingEvents []apievents.AuditEvent
+	mu            sync.Mutex
 }
 
 func newSessionAuditor(cfg sessionAuditorConfig) (*sessionAuditor, error) {
@@ -124,8 +131,8 @@ func (a *sessionAuditor) shouldEmitEvent(method mcp.MCPMethod) bool {
 	}
 }
 
-func (a *sessionAuditor) emitStartEvent(ctx context.Context) {
-	a.emitEvent(ctx, &apievents.MCPSessionStart{
+func (a *sessionAuditor) appendStartEvent(ctx context.Context) {
+	a.appendEvent(ctx, &apievents.MCPSessionStart{
 		Metadata: a.makeEventMetadata(
 			events.MCPSessionStartEvent,
 			events.MCPSessionStartCode,
@@ -135,7 +142,6 @@ func (a *sessionAuditor) emitStartEvent(ctx context.Context) {
 		UserMetadata:       a.makeUserMetadata(),
 		ConnectionMetadata: a.makeConnectionMetadata(),
 		AppMetadata:        a.makeAppMetadata(),
-		McpSessionId:       a.sessionCtx.mcpSessionID.String(),
 	})
 }
 
@@ -163,7 +169,7 @@ func (a *sessionAuditor) emitEndEvent(ctx context.Context, options ...eventOptio
 		event.Status.Success = false
 		event.Status.Error = opts.err.Error()
 	}
-	a.emitEvent(ctx, event)
+	a.flushAndEmitEvent(ctx, event)
 }
 
 func (a *sessionAuditor) emitNotificationEvent(ctx context.Context, msg *mcputils.JSONRPCNotification, options ...eventOptionFunc) {
@@ -194,10 +200,10 @@ func (a *sessionAuditor) emitNotificationEvent(ctx context.Context, msg *mcputil
 		event.Status.Success = false
 		event.Status.Error = opts.err.Error()
 	}
-	a.emitEvent(ctx, event)
+	a.flushAndEmitEvent(ctx, event)
 }
 
-func (a *sessionAuditor) emitRequestEvent(ctx context.Context, msg *mcputils.JSONRPCRequest, options ...eventOptionFunc) {
+func (a *sessionAuditor) emitOrAppendRequestEvent(ctx context.Context, msg *mcputils.JSONRPCRequest, options ...eventOptionFunc) {
 	opts := newEventOptions(options...)
 	if opts.err == nil && !a.shouldEmitEvent(msg.Method) {
 		return
@@ -227,7 +233,22 @@ func (a *sessionAuditor) emitRequestEvent(ctx context.Context, msg *mcputils.JSO
 		event.Status.Success = false
 		event.Status.Error = opts.err.Error()
 	}
-	a.emitEvent(ctx, event)
+
+	// Wait for server information from initialize result before emitting session
+	// start and initialize request events.
+	if msg.Method == mcp.MethodInitialize {
+		if params, err := msg.GetInitializeParams(); err == nil {
+			a.updatePendingSessionStartEvent(func(sessionStartEvent *apievents.MCPSessionStart) {
+				sessionStartEvent.ClientInfo = fmt.Sprintf("%s/%s", params.ClientInfo.Name, params.ClientInfo.Version)
+				// TODO(greedy52) record protocol version, ingress and egress auth type
+			})
+		}
+		if opts.err == nil {
+			a.appendEvent(ctx, event)
+			return
+		}
+	}
+	a.flushAndEmitEvent(ctx, event)
 }
 
 func (a *sessionAuditor) emitListenSSEStreamEvent(ctx context.Context, options ...eventOptionFunc) {
@@ -250,7 +271,7 @@ func (a *sessionAuditor) emitListenSSEStreamEvent(ctx context.Context, options .
 		event.Status.Success = false
 		event.Status.Error = opts.err.Error()
 	}
-	a.emitEvent(ctx, event)
+	a.flushAndEmitEvent(ctx, event)
 }
 
 func (a *sessionAuditor) emitInvalidHTTPRequest(ctx context.Context, r *http.Request) {
@@ -269,10 +290,43 @@ func (a *sessionAuditor) emitInvalidHTTPRequest(ctx context.Context, r *http.Req
 		RawQuery:        r.URL.RawQuery,
 		Headers:         wrappers.Traits(r.Header),
 	}
-	a.emitEvent(ctx, event)
+	a.flushAndEmitEvent(ctx, event)
 }
 
-func (a *sessionAuditor) emitEvent(ctx context.Context, event apievents.AuditEvent) {
+func (a *sessionAuditor) appendEvent(ctx context.Context, event apievents.AuditEvent) {
+	preparedEvent, err := a.preparer.PrepareSessionEvent(event)
+	if err != nil {
+		a.logger.ErrorContext(ctx, "Failed to prepare event",
+			"error", err,
+			"event_type", event.GetType(),
+			"event_id", event.GetID(),
+		)
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pendingEvents = append(a.pendingEvents, preparedEvent.GetAuditEvent())
+}
+
+func (a *sessionAuditor) flush(ctx context.Context) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, event := range a.pendingEvents {
+		if err := a.emitter.EmitAuditEvent(ctx, event); err != nil {
+			a.logger.ErrorContext(ctx, "Failed to emit audit event",
+				"error", err,
+				"event_type", event.GetType(),
+				"event_id", event.GetID(),
+			)
+		}
+	}
+	a.pendingEvents = nil
+}
+
+func (a *sessionAuditor) flushAndEmitEvent(ctx context.Context, event apievents.AuditEvent) {
+	a.flush(ctx)
+
 	preparedEvent, err := a.preparer.PrepareSessionEvent(event)
 	if err != nil {
 		a.logger.ErrorContext(ctx, "Failed to prepare event",
@@ -330,6 +384,29 @@ func (a *sessionAuditor) makeSessionMetadata() apievents.SessionMetadata {
 
 func (a *sessionAuditor) makeUserMetadata() apievents.UserMetadata {
 	return a.sessionCtx.Identity.GetUserMetadata()
+}
+
+func (a *sessionAuditor) updatePendingSessionStartEvent(fn func(*apievents.MCPSessionStart)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, event := range a.pendingEvents {
+		if sessionStartEvent, ok := event.(*apievents.MCPSessionStart); ok {
+			fn(sessionStartEvent)
+		}
+	}
+}
+
+func (a *sessionAuditor) updatePendingSessionStartEventWithResult(ctx context.Context, resp *mcputils.JSONRPCResponse) {
+	// TODO(greedy52) resp.GetInitializeResult() and update session start event
+
+	// We can flush now as we receive the result.
+	a.flush(ctx)
+}
+
+func (a *sessionAuditor) updatePendingSessionStartEventWithExternalSessionID(sessionID string) {
+	a.updatePendingSessionStartEvent(func(event *apievents.MCPSessionStart) {
+		event.McpSessionId = sessionID
+	})
 }
 
 var headersWithSecret = []string{

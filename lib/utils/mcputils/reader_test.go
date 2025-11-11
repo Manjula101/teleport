@@ -58,7 +58,7 @@ func TestReadOneResponse(t *testing.T) {
 		},
 		{
 			name:       "request",
-			rawMessage: string(sampleRequestJSON),
+			rawMessage: string(sampleToolsCallRequestJSON),
 			checkError: require.Error,
 		},
 		{
