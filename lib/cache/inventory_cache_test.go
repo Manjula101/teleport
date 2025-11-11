@@ -18,6 +18,7 @@ package cache
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"testing"
 	"testing/synctest"
@@ -26,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"rsc.io/ordered"
 
 	headerv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/header/v1"
 	inventoryv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
@@ -305,7 +307,7 @@ func TestInventoryCache(t *testing.T) {
 		require.Len(t, firstPageResp.Items, 5, "first page should have 5 items, got %d", len(firstPageResp.Items))
 
 		// The next page token should be the key of the first item on the next page (6th item)
-		expectedNextPageToken := "bot-3/bot3/bot_instance"
+		expectedNextPageToken := base64.StdEncoding.EncodeToString([]byte(string(ordered.Encode("bot-3", "bot3", types.KindBotInstance))))
 		require.Equal(t, expectedNextPageToken, firstPageResp.NextPageToken)
 
 		// Fetch another page of 5, this time using the page token from before
@@ -317,7 +319,7 @@ func TestInventoryCache(t *testing.T) {
 		require.Len(t, secondPageResp.Items, 5, "second page should have 5 items, got %d", len(secondPageResp.Items))
 
 		// The returned next page token should be the alphabetical key of the first item on the third page (11th item)
-		expectedSecondPageToken := "node1.example.com/agent3/instance"
+		expectedSecondPageToken := base64.StdEncoding.EncodeToString([]byte(string(ordered.Encode("node1.example.com", "agent3", types.KindInstance))))
 		require.Equal(t, expectedSecondPageToken, secondPageResp.NextPageToken, "second page next token should match expected format")
 
 		// Fetch another page of 5, using the page token from before

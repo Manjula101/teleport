@@ -14,10 +14,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+// TODO(rudream): move this to lib/cache/inventory
 package cache
 
 import (
 	"context"
+	"encoding/base64"
 	"log/slog"
 	"math"
 	"sync"
@@ -27,6 +29,7 @@ import (
 	"github.com/gravitational/trace"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/proto"
+	"rsc.io/ordered"
 
 	"github.com/gravitational/teleport/api/defaults"
 	inventoryv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
@@ -76,7 +79,12 @@ func (u *inventoryInstance) getInstanceID() string {
 	if u.isInstance() {
 		return u.instance.GetName()
 	}
-	return u.bot.GetSpec().GetInstanceId()
+	id := u.bot.GetSpec().GetInstanceId()
+	// Fallback to metadata name if instance ID is not set
+	if id == "" {
+		id = u.bot.GetMetadata().GetName()
+	}
+	return id
 }
 
 // getHostnameOrBotNameAndInstanceId returns the friendly name of this instance.
@@ -102,21 +110,45 @@ func (u *inventoryInstance) getKind() string {
 }
 
 // getAlphabeticalKey returns the composite key for alphabetical sorting.
-// Format: <bot name or hostname>/<instance id>/<kind>
 func (u *inventoryInstance) getAlphabeticalKey() string {
-	return u.getHostnameOrBotNameAndInstanceId() + "/" + u.getKind()
+	var name, id string
+	if u.isInstance() {
+		name = u.instance.GetHostname()
+		id = u.instance.GetName()
+	} else {
+		name = u.bot.GetSpec().GetBotName()
+		id = u.bot.GetSpec().GetInstanceId()
+		// Fallback to metadata name if instance ID is not set
+		if id == "" {
+			id = u.bot.GetMetadata().GetName()
+		}
+	}
+
+	return string(ordered.Encode(name, id, u.getKind()))
 }
 
 // getTypeKey returns the composite key for sorting by type.
-// Format: <kind>/<bot name or hostname>/<instance id>
 func (u *inventoryInstance) getTypeKey() string {
-	return u.getKind() + "/" + u.getHostnameOrBotNameAndInstanceId()
+	var name, id string
+	if u.isInstance() {
+		name = u.instance.GetHostname()
+		id = u.instance.GetName()
+	} else {
+		name = u.bot.GetSpec().GetBotName()
+		id = u.bot.GetSpec().GetInstanceId()
+		// Fallback to metadata name if instance ID is not set
+		if id == "" {
+			id = u.bot.GetMetadata().GetName()
+		}
+	}
+
+	return string(ordered.Encode(u.getKind(), name, id))
 }
 
 // getIDKey returns the key for lookup by instance ID.
-// Format: <instance id>
+// We use ordered encoding for safe lexicographic ordering
 func (u *inventoryInstance) getIDKey() string {
-	return u.getInstanceID()
+	return string(ordered.Encode(u.getInstanceID()))
 }
 
 // clone returns a deep copy of the unified instance.
@@ -570,7 +602,9 @@ func (ic *InventoryCache) processDeleteEvent(event backend.Event) error {
 		instanceID := keyParts[len(keyParts)-1]
 
 		// Find and remove the instance from the cache.
-		if existing, err := ic.store.get(inventoryIDIndex, instanceID); err == nil {
+		// The ID index uses ordered encoding, so we need to encode the ID
+		encodedID := string(ordered.Encode(instanceID))
+		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
 			ic.store.delete(existing)
 		}
 	}
@@ -585,7 +619,9 @@ func (ic *InventoryCache) processDeleteEvent(event backend.Event) error {
 		botInstanceID := keyParts[len(keyParts)-1]
 
 		// Find and remove the bot instance from the cache
-		if existing, err := ic.store.get(inventoryIDIndex, botInstanceID); err == nil {
+		// The ID index uses ordered encoding, so we need to encode the ID
+		encodedID := string(ordered.Encode(botInstanceID))
+		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
 			ic.store.delete(existing)
 		}
 	}
@@ -604,13 +640,20 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 		req.PageSize = defaults.DefaultChunkSize
 	}
 
-	startKey := req.PageToken
-	if startKey == "" {
+	// Decode the PageToken from base64
+	var startKey string
+	if req.PageToken != "" {
+		decoded, err := base64.StdEncoding.DecodeString(req.PageToken)
+		if err != nil {
+			return nil, trace.BadParameter("invalid page token: %v", err)
+		}
+		startKey = string(decoded)
+	} else {
 		// If no kinds filter is specified or multiple kinds are, start from the beginning.
 		// If we're only filtering for 1 kind, use type index with kind prefix.
 		if req.Filter != nil && len(req.Filter.InstanceTypes) == 1 {
 			kind := req.Filter.InstanceTypes[0]
-			startKey = kind + "/"
+			startKey = string(ordered.Encode(kind))
 		}
 	}
 
@@ -618,17 +661,16 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 	var nextPageToken string
 
 	index := inventoryAlphabeticalIndex
+	var endKey string
 	// Determine if we should use the type index.
 	useTypeIndex := req.Filter != nil && len(req.Filter.InstanceTypes) == 1
 	if useTypeIndex {
 		index = inventoryTypeIndex
-	}
-
-	endKey := ""
-	// Determine the endKey for type filtering
-	if useTypeIndex {
-		kind := req.Filter.InstanceTypes[0]
-		endKey = kind + "0"
+		if req.PageToken == "" {
+			kind := req.Filter.InstanceTypes[0]
+			// Use \xff to create an upper bound for this kind prefix
+			endKey = string(ordered.Encode(kind)) + "\xff"
+		}
 	}
 
 	for sf := range ic.store.cache.Ascend(index, startKey, endKey) {
@@ -637,11 +679,14 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 		}
 
 		if len(items) == int(req.PageSize) {
+			var rawKey string
 			if index == inventoryAlphabeticalIndex {
-				nextPageToken = sf.getAlphabeticalKey()
+				rawKey = sf.getAlphabeticalKey()
 			} else {
-				nextPageToken = sf.getTypeKey()
+				rawKey = sf.getTypeKey()
 			}
+			// Encode the next page token to base64
+			nextPageToken = base64.StdEncoding.EncodeToString([]byte(rawKey))
 			break
 		}
 
