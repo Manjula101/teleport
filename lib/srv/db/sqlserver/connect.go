@@ -30,9 +30,10 @@ import (
 	"github.com/microsoft/go-mssqldb/msdsn"
 
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/common/kerberos"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/srv/db/sqlserver/protocol"
 )
 
@@ -177,14 +178,14 @@ func getHostPort(db types.Database) (string, string, error) {
 	return host, port, nil
 }
 
-// NewEndpointsResolver returns an endpoint resolver.
-func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
-	host, port, err := getHostPort(db)
+// NewHealthChecker returns an endpoint health checker.
+func NewHealthChecker(_ context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	host, port, err := getHostPort(cfg.Database)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 	addr := net.JoinHostPort(host, port)
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+	return healthcheck.NewTargetDialer(func(context.Context) ([]string, error) {
 		return []string{addr}, nil
 	}), nil
 }

@@ -40,8 +40,9 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
@@ -232,9 +233,9 @@ func getURL(db types.Database) (*url.URL, error) {
 	return u, nil
 }
 
-// NewHTTPEndpointsResolver resolves a ClickHouse HTTP endpoint from DB URI.
-func NewHTTPEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
-	dbURL, err := getURL(db)
+// NewHTTPEndpointHealthChecker resolves a ClickHouse HTTP endpoint from DB URI.
+func NewHTTPEndpointHealthChecker(_ context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	dbURL, err := getURL(cfg.Database)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -256,7 +257,7 @@ func NewHTTPEndpointsResolver(_ context.Context, db types.Database, _ endpoints.
 	host := dbURL.Hostname()
 	port := cmp.Or(dbURL.Port(), "443")
 	hostPort := net.JoinHostPort(host, port)
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+	return healthcheck.NewTargetDialer(func(context.Context) ([]string, error) {
 		return []string{hostPort}, nil
 	}), nil
 }

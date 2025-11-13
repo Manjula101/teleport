@@ -44,10 +44,11 @@ import (
 	"github.com/gravitational/teleport/lib/cloud/awsconfig"
 	"github.com/gravitational/teleport/lib/cloud/azure"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/common/iam"
 	"github.com/gravitational/teleport/lib/srv/db/common/role"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/srv/db/redis/connection"
 	"github.com/gravitational/teleport/lib/srv/db/redis/protocol"
 	"github.com/gravitational/teleport/lib/utils"
@@ -664,14 +665,14 @@ func getHostPort(connOpts *connection.Options) string {
 	return net.JoinHostPort(connOpts.Address, connOpts.Port)
 }
 
-// NewEndpointsResolver resolves an endpoint from DB URI.
-func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
-	connOpts, err := getConnectionOptions(db)
+// NewHealthChecker resolves an endpoint from DB URI.
+func NewHealthChecker(_ context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	connOpts, err := getConnectionOptions(cfg.Database)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 	hostPort := getHostPort(connOpts)
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+	return healthcheck.NewTargetDialer(func(context.Context) ([]string, error) {
 		return []string{hostPort}, nil
 	}), nil
 }

@@ -46,9 +46,10 @@ import (
 	"github.com/gravitational/teleport/lib/cloud/awsconfig"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/common/role"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/utils"
 	libaws "github.com/gravitational/teleport/lib/utils/aws"
 	"github.com/gravitational/teleport/lib/utils/aws/dynamodbutils"
@@ -497,14 +498,14 @@ func getTargetHeader(req *http.Request) (string, error) {
 }
 
 // NewEndpointsResolver resolves endpoints from DB URI.
-func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
+func NewEndpointsResolver(_ context.Context, db types.Database) (healthcheck.Resolver, error) {
 	aws := db.GetAWS()
 	fips := dynamodbutils.IsFIPSEnabled()
 	resolverFns := []resolverFn{
 		resolveDynamoDBEndpoint,
 		resolveDynamoDBStreamsEndpoint,
 	}
-	return endpoints.ResolverFn(func(ctx context.Context) ([]string, error) {
+	return healthcheck.EndpointsResolverFunc(func(ctx context.Context) ([]string, error) {
 		addrs := make([]string, 0, len(resolverFns))
 		for _, resolve := range resolverFns {
 			re, err := resolve(ctx, aws.Region, aws.AccountID, fips)
@@ -531,4 +532,13 @@ func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.Reso
 		}
 		return addrs, nil
 	}), nil
+}
+
+// NewHealthChecker resolves endpoints from DB URI.
+func NewHealthChecker(ctx context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	resolver, err := NewEndpointsResolver(ctx, cfg.Database)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return healthcheck.NewTargetDialer(resolver.Resolve), nil
 }

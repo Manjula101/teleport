@@ -39,9 +39,10 @@ import (
 
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/types/events"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/common/role"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 )
 
 type upstream[T any] interface {
@@ -525,10 +526,10 @@ func getEndpoint(db types.Database) string {
 	return db.GetURI()
 }
 
-// NewEndpointsResolver returns an endpoint resolver.
-func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
-	uri := getEndpoint(db)
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+// NewHealthChecker returns an endpoint health checker.
+func NewHealthChecker(_ context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	uri := getEndpoint(cfg.Database)
+	return healthcheck.NewTargetDialer(func(context.Context) ([]string, error) {
 		return []string{uri}, nil
 	}), nil
 }

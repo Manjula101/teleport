@@ -35,13 +35,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/gravitational/teleport"
-	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/api/types/wrappers"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/common/role"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
@@ -312,16 +312,16 @@ func parseURI(uri string) (*url.URL, error) {
 	return u, nil
 }
 
-// NewEndpointsResolver resolves an endpoint from DB URI.
-func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
-	dbURL, err := parseURI(db.GetURI())
+// NewHealthChecker resolves an endpoint from DB URI.
+func NewHealthChecker(_ context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	dbURL, err := parseURI(cfg.Database.GetURI())
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 	host := dbURL.Hostname()
 	port := cmp.Or(dbURL.Port(), "443")
 	hostPort := net.JoinHostPort(host, port)
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+	return healthcheck.NewTargetDialer(func(context.Context) ([]string, error) {
 		return []string{hostPort}, nil
 	}), nil
 }

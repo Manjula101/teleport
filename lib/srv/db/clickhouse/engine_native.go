@@ -26,8 +26,9 @@ import (
 	"github.com/gravitational/trace"
 
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
@@ -67,13 +68,13 @@ func getNativeEndpoint(db types.Database) (string, error) {
 	return u.Host, nil
 }
 
-// NewNativeEndpointsResolver resolves a ClickHouse native endpoint from DB URI.
-func NewNativeEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
-	endpoint, err := getNativeEndpoint(db)
+// NewNativeEndpointHealthChecker resolves a ClickHouse native endpoint from DB URI.
+func NewNativeEndpointHealthChecker(_ context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	endpoint, err := getNativeEndpoint(cfg.Database)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+	return healthcheck.NewTargetDialer(func(context.Context) ([]string, error) {
 		return []string{endpoint}, nil
 	}), nil
 }

@@ -40,8 +40,9 @@ import (
 	"go.mongodb.org/mongo-driver/x/mongo/driver/topology"
 
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/srv/db/mongodb/protocol"
 	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 )
@@ -237,15 +238,16 @@ func makeClientOptionsFromDatabaseURI(uri string) (*options.ClientOptions, error
 	return clientCfg, nil
 }
 
-// NewEndpointsResolver returns a health check target endpoint resolver.
+// NewHealthChecker returns an endpoint health checker.
 // SRV URI (mongodb+srv://) is resolved to a seed list from DNS SRV record
 // https://www.mongodb.com/docs/manual/reference/connection-string/#srv-connection-format
-func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
-	return newEndpointsResolver(db.GetURI()), nil
+func NewHealthChecker(_ context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	resolver := newEndpointsResolver(cfg.Database.GetURI())
+	return healthcheck.NewTargetDialer(resolver.Resolve), nil
 }
 
-func newEndpointsResolver(uri string) endpoints.Resolver {
-	return endpoints.ResolverFn(func(ctx context.Context) ([]string, error) {
+func newEndpointsResolver(uri string) healthcheck.EndpointsResolverFunc {
+	return func(ctx context.Context) ([]string, error) {
 		clientCfg, err := makeClientOptionsFromDatabaseURI(uri)
 		if err != nil {
 			return nil, trace.Wrap(err)
@@ -255,7 +257,7 @@ func newEndpointsResolver(uri string) endpoints.Resolver {
 			endpoints = append(endpoints, address.Address(host).String())
 		}
 		return endpoints, nil
-	})
+	}
 }
 
 // getServerSelector returns selector for picking the server to connect to,

@@ -40,9 +40,10 @@ import (
 
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/common/role"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
@@ -687,7 +688,7 @@ func parseURI(uri string) (*url.URL, error) {
 }
 
 // NewEndpointsResolver resolves an endpoint from DB URI.
-func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
+func NewEndpointsResolver(_ context.Context, db types.Database) (healthcheck.Resolver, error) {
 	dbURL, err := parseURI(db.GetURI())
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -695,7 +696,16 @@ func NewEndpointsResolver(_ context.Context, db types.Database, _ endpoints.Reso
 	host := dbURL.Hostname()
 	port := cmp.Or(dbURL.Port(), "443")
 	hostPort := net.JoinHostPort(host, port)
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+	return healthcheck.EndpointsResolverFunc(func(context.Context) ([]string, error) {
 		return []string{hostPort}, nil
 	}), nil
+}
+
+// NewHealthChecker resolves an endpoint from DB URI.
+func NewHealthChecker(ctx context.Context, cfg healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
+	resolver, err := NewEndpointsResolver(ctx, cfg.Database)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return healthcheck.NewTargetDialer(resolver.Resolve), nil
 }

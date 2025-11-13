@@ -39,9 +39,10 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	gcputils "github.com/gravitational/teleport/api/utils/gcp"
 	libcloud "github.com/gravitational/teleport/lib/cloud"
+	"github.com/gravitational/teleport/lib/healthcheck"
 	"github.com/gravitational/teleport/lib/srv/db/cloud"
 	"github.com/gravitational/teleport/lib/srv/db/common"
-	"github.com/gravitational/teleport/lib/srv/db/endpoints"
+	"github.com/gravitational/teleport/lib/srv/db/healthchecks"
 	discoverycommon "github.com/gravitational/teleport/lib/srv/discovery/common"
 )
 
@@ -57,17 +58,21 @@ type connector struct {
 	startupParams map[string]string
 }
 
-// NewEndpointsResolver returns a health check target endpoint resolver.
-func NewEndpointsResolver(_ context.Context, db types.Database, config endpoints.ResolverBuilderConfig) (endpoints.Resolver, error) {
+// NewHealthChecker returns an endpoint health checker.
+func NewHealthChecker(_ context.Context, config healthchecks.HealthCheckerConfig) (healthcheck.HealthChecker, error) {
 	// special handling for AlloyDB
-	if db.GetType() == types.DatabaseTypeAlloyDB {
-		return newAlloyDBEndpointsResolver(db, config.GCPClients)
+	if config.Database.GetType() == types.DatabaseTypeAlloyDB {
+		return newAlloyDBEndpointsResolver(config.Database, config.GCPClients)
 	}
 
-	return newEndpointsResolver(db.GetURI())
+	resolver, err := newEndpointsResolver(config.Database.GetURI())
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return healthcheck.NewTargetDialer(resolver.Resolve), nil
 }
 
-func newAlloyDBEndpointsResolver(db types.Database, clients endpoints.GCPClients) (endpoints.Resolver, error) {
+func newAlloyDBEndpointsResolver(db types.Database, clients healthchecks.GCPClients) (healthcheck.HealthChecker, error) {
 	serverPort := strconv.Itoa(alloyDBServerProxyPort)
 
 	info, err := gcputils.ParseAlloyDBConnectionURI(db.GetURI())
@@ -77,12 +82,12 @@ func newAlloyDBEndpointsResolver(db types.Database, clients endpoints.GCPClients
 
 	if db.GetGCP().AlloyDB.EndpointOverride != "" {
 		addr := net.JoinHostPort(db.GetGCP().AlloyDB.EndpointOverride, serverPort)
-		return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+		return healthcheck.NewTargetDialer(func(context.Context) ([]string, error) {
 			return []string{addr}, nil
 		}), nil
 	}
 
-	resolveFun := endpoints.ResolverFn(func(ctx context.Context) ([]string, error) {
+	return healthcheck.NewTargetDialer(func(ctx context.Context) ([]string, error) {
 		adminClient, err := clients.GetGCPAlloyDBClient(ctx)
 		if err != nil {
 			return nil, trace.Wrap(err)
@@ -92,12 +97,10 @@ func newAlloyDBEndpointsResolver(db types.Database, clients endpoints.GCPClients
 			return nil, trace.Wrap(err)
 		}
 		return []string{net.JoinHostPort(addr, serverPort)}, nil
-	})
-
-	return resolveFun, nil
+	}), nil
 }
 
-func newEndpointsResolver(uri string) (endpoints.Resolver, error) {
+func newEndpointsResolver(uri string) (healthcheck.EndpointsResolverFunc, error) {
 	config, err := pgconn.ParseConfig(fmt.Sprintf("postgres://%s", uri))
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -113,9 +116,9 @@ func newEndpointsResolver(uri string) (endpoints.Resolver, error) {
 			addrs = append(addrs, hostPort)
 		}
 	}
-	return endpoints.ResolverFn(func(context.Context) ([]string, error) {
+	return func(context.Context) ([]string, error) {
 		return addrs, nil
-	}), nil
+	}, nil
 }
 
 // alloyDBServerProxyPort is the non-configurable port on which the AlloyDB server-side proxy is listening.
