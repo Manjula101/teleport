@@ -378,21 +378,24 @@ func IsAccessListMember(
 		}
 	}
 
-	pathVisitor, err := newAccessPathVisitor(ctx, g, accessList, validForUserFilter(user, clock.Now()))
+	// newAccessPathVisitor provides a cycle-proof way of traversing the nested list hierarchy.
+	pathVisitor, err := newAccessPathVisitor(g, accessList, validForUserFilter(user, clock.Now()))
 	if err != nil {
 		return accesslistv1.AccessListUserAssignmentType_ACCESS_LIST_USER_ASSIGNMENT_TYPE_UNSPECIFIED, trace.Wrap(err, "fetching access list %q members", accessList.GetName())
 	}
-	for path, err := range pathVisitor.accessPaths {
+	for path, err := range pathVisitor.accessPaths(ctx) {
 		if err != nil {
 			return accesslistv1.AccessListUserAssignmentType_ACCESS_LIST_USER_ASSIGNMENT_TYPE_UNSPECIFIED, trace.Wrap(err)
 		}
-		// If the path is composed of onl.y 2 components: the start list and
+		// If the path is composed of only 2 components: the start list and
 		// the user membership, this is an explicit assignment.
+		// For example: ["my-list", "my-user"]
 		if len(path) == 2 {
 			return accesslistv1.AccessListUserAssignmentType_ACCESS_LIST_USER_ASSIGNMENT_TYPE_EXPLICIT, nil
 		}
 
 		// Else the assignment is inherited through one or many levels of nested access lists.
+		// For example: ["my-list", "my-nested-list", "my-user"]
 		return accesslistv1.AccessListUserAssignmentType_ACCESS_LIST_USER_ASSIGNMENT_TYPE_INHERITED, nil
 	}
 

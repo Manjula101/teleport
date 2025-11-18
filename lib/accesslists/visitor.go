@@ -140,6 +140,7 @@ func newAccessPathVisitor(
 	if ok {
 		stack = append(stack, accessPath{start})
 	} else if reason != "" {
+		// non-empty reason means we can silently skip the path
 		skipped = append(skipped, skippedAccessPath{accessPath{start}, reason})
 	}
 
