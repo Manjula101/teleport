@@ -14991,7 +14991,7 @@ type SAMLAuthRequest struct {
 	// ClientVersion is the version of tsh or Proxy that is sending the SAMLAuthRequest request.
 	ClientVersion string `protobuf:"bytes,24,opt,name=ClientVersion,proto3" json:"client_version,omitempty"`
 	// SubjectIdentifier is an optional username/email provided by the client that will be
-	// passed to prepopulate teh IdP's login form
+	// passed to prepopulate the IdP's login form
 	SubjectIdentifier    string   `protobuf:"bytes,25,opt,name=subject_identifier,json=subjectIdentifier,proto3" json:"subject_identifier,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
