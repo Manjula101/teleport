@@ -263,7 +263,7 @@ func ParseAttestedData(adBytes []byte) (*AttestedData, *pkcs7.PKCS7, error) {
 		return nil, nil, trace.AccessDenied("unsupported signature type: %v", signedAD.Encoding)
 	}
 
-	sigDER, err := base64.StdEncoding.DecodeString(string(signedAD.Signature))
+	sigDER, err := base64.StdEncoding.DecodeString(signedAD.Signature)
 	if err != nil {
 		return nil, nil, trace.Wrap(err, "decoding attested data document from base64")
 	}

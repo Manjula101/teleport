@@ -21,9 +21,9 @@ import (
 	"crypto/x509"
 	"net/http"
 
-	"github.com/gravitational/teleport"
 	"github.com/gravitational/trace"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/cloud/imds/azure"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/join/azurejoin"
