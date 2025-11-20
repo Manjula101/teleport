@@ -35,10 +35,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	apievents "github.com/gravitational/teleport/api/types/events"
@@ -466,43 +468,44 @@ func TestUploadBackoff(t *testing.T) {
 	}
 }
 
-// TestUploadBadSession creates a corrupted session file
-// and makes sure the uploader marks it as faulty
-func TestUploadBadSession(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+// TestUploadCorruptSession creates a corrupted session file
+// and makes sure the uploader marks it as faulty and moves it
+// to the corrupted directory
+func TestUploadCorruptSession(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
 
-	p := newUploaderPack(ctx, t, uploaderPackConfig{})
+		p := newUploaderPack(ctx, t, uploaderPackConfig{
+			clock: clockwork.NewRealClock(),
+		})
 
-	// wait until uploader blocks on the clock
-	p.clock.BlockUntilContext(ctx, 1)
+		sessionID := session.NewID()
+		fileName := filepath.Join(p.scanDir, string(sessionID)+tarExt)
 
-	sessionID := session.NewID()
-	fileName := filepath.Join(p.scanDir, string(sessionID)+tarExt)
+		err := os.WriteFile(fileName, []byte("this session is corrupted"), 0o600)
+		require.NoError(t, err)
 
-	err := os.WriteFile(fileName, []byte("this session is corrupted"), 0o600)
-	require.NoError(t, err)
-
-	// initiate the scan by advancing clock past
-	// block period
-	p.clock.Advance(p.scanPeriod + time.Second)
-
-	// wait for the upload event, make sure
-	// the error is the problem error
-	var event events.UploadEvent
-	select {
-	case event = <-p.eventsC:
+		// wait for the upload event, make sure
+		// the error is the problem error
+		event := <-p.eventsC
 		require.Error(t, event.Error)
 		require.True(t, isSessionError(event.Error))
-	case <-ctx.Done():
-		t.Fatalf("Timeout waiting for async upload, try `go test -v` to get more logs for details")
-	}
 
-	stats, err := p.uploader.Scan(ctx)
-	require.NoError(t, err)
-	// Bad records have been scanned, but uploads have not started
-	require.Equal(t, 1, stats.Scanned)
-	require.Equal(t, 0, stats.Started)
+		stats, err := p.uploader.Scan(ctx)
+		require.NoError(t, err)
+		// Bad records have been scanned, but uploads have not started
+		require.Equal(t, 1, stats.Scanned)
+		require.Equal(t, 1, stats.Corrupted)
+		require.Equal(t, 0, stats.Started)
+
+		// wait for the upload to picked up again and moved to the corrupted
+		// directory
+		synctest.Wait()
+
+		// make sure the file has been moved from the scan dir to the corrupted dir
+		require.NoFileExists(t, fileName)
+		require.FileExists(t, filepath.Join(p.uploader.cfg.CorruptedDir, string(sessionID)+tarExt))
+	})
 }
 
 // TestMinimumUpload tests that the minimum upload values for files and final uploads are respected.
@@ -814,6 +817,95 @@ func TestUploadEncryptedRecording(t *testing.T) {
 	}
 }
 
+// TestUploadCorruptEncryptedRecording ensures that a single failed upload does not cause failures to upload
+// other well-formed recordings. It also ensures that the affected file is moved into the corrupted directory.
+func TestUploadCorruptEncryptedRecording(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		var failedSessionID string
+		wrapUploaderFn := func(uploader events.EncryptedRecordingUploader) events.EncryptedRecordingUploader {
+			return encryptedUploaderFn(func(ctx context.Context, sessionID string, parts iter.Seq2[[]byte, error]) error {
+				if sessionID == failedSessionID {
+					return sessionError{errors.New("forced failure")}
+				}
+
+				return uploader.UploadEncryptedRecording(ctx, sessionID, parts)
+			})
+		}
+		p := newUploaderPack(ctx, t, uploaderPackConfig{
+			clock:                              clockwork.NewRealClock(),
+			minimumFileUploadBytes:             64,
+			encrypter:                          &fakeEncryptedIO{},
+			encryptedRecordingUploadTargetSize: 128,
+			wrapEncryptedUploader:              wrapUploaderFn,
+		})
+		synctest.Wait()
+
+		// clean up the scan dir because the tests are flaky otherwise
+		t.Cleanup(func() { os.RemoveAll(p.scanDir) })
+
+		// generate a few recordings
+		eventsCount := 100
+		sessionCount := 5
+		sessionIDs := make([]string, sessionCount)
+		failedIdx := mathrand.IntN(len(sessionIDs))
+		for i := range sessionCount {
+			inEvents := eventstest.GenerateTestSession(eventstest.SessionParams{PrintEvents: int64(eventsCount)})
+			sessionIDs[i] = inEvents[0].(events.SessionMetadataGetter).GetSessionID()
+			if i == failedIdx {
+				failedSessionID = sessionIDs[i]
+			}
+			p.emitEvents(ctx, t, inEvents)
+		}
+
+		// make sure we get the right upload events for the sessions
+		for range len(sessionIDs) {
+			var event events.UploadEvent
+			select {
+			case event = <-p.memEventsC:
+				if event.SessionID != failedSessionID {
+					assert.NoError(t, event.Error)
+				} else {
+					assert.Error(t, event.Error)
+					assert.True(t, isSessionError(event.Error))
+				}
+			case event = <-p.eventsC:
+				if event.SessionID != failedSessionID {
+					assert.NoError(t, event.Error)
+				} else {
+					assert.Error(t, event.Error)
+					assert.True(t, isSessionError(event.Error))
+				}
+			}
+		}
+		// wait for uploads to be processed
+		synctest.Wait()
+
+		for _, sid := range sessionIDs {
+			if sid == failedSessionID {
+				// the failed file should still be present
+				assert.FileExists(t, filepath.Join(p.scanDir, failedSessionID+tarExt))
+				continue
+			}
+			// all other files should have been uploaded and removed from the
+			// scan dir
+			assert.NoFileExists(t, filepath.Join(p.scanDir, sid+tarExt))
+		}
+
+		// wait for uploads to be reprocessed and corrupt recording to move
+		// to corrupted directory
+		stats, err := p.uploader.Scan(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 1, stats.Scanned)
+		require.Equal(t, 1, stats.Corrupted)
+		require.Equal(t, 0, stats.Started)
+		synctest.Wait()
+
+		assert.NoFileExists(t, filepath.Join(p.scanDir, failedSessionID+tarExt))
+		assert.FileExists(t, filepath.Join(p.uploader.cfg.CorruptedDir, failedSessionID+tarExt))
+	})
+}
+
 type uploaderPackConfig struct {
 	minimumFileUploadBytes             int64
 	minimumUploadBytes                 int64
@@ -822,6 +914,7 @@ type uploaderPackConfig struct {
 	wrapEncryptedUploader              wrapEncryptedUploaderFn
 	encryptedRecordingUploadTargetSize int
 	encryptedRecordingUploadMaxSize    int
+	clock                              clockwork.Clock
 }
 
 // uploaderPack reduces boilerplate required
@@ -849,8 +942,14 @@ func newUploaderPack(ctx context.Context, t *testing.T, cfg uploaderPackConfig) 
 	ctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
 
+	clock := cfg.clock
+	var fakeClock *clockwork.FakeClock
+	if clock == nil {
+		fakeClock = clockwork.NewFakeClock()
+		clock = fakeClock
+	}
 	pack := uploaderPack{
-		clock:            clockwork.NewFakeClock(),
+		clock:            fakeClock,
 		eventsC:          make(chan events.UploadEvent, 100),
 		memEventsC:       make(chan events.UploadEvent, 100),
 		scanDir:          scanDir,
@@ -889,7 +988,7 @@ func newUploaderPack(ctx context.Context, t *testing.T, cfg uploaderPackConfig) 
 		InitialScanDelay:                   pack.initialScanDelay,
 		ScanPeriod:                         pack.scanPeriod,
 		Streamer:                           pack.protoStreamer,
-		Clock:                              pack.clock,
+		Clock:                              clock,
 		EventsC:                            pack.eventsC,
 		EncryptedRecordingUploader:         pack.memUploader,
 		EncryptedRecordingUploadTargetSize: cfg.encryptedRecordingUploadTargetSize,
