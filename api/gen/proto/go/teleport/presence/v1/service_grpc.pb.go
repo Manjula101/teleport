@@ -22,6 +22,7 @@ package presencev1
 
 import (
 	context "context"
+	v1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
 	types "github.com/gravitational/teleport/api/types"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
@@ -35,16 +36,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PresenceService_GetRemoteCluster_FullMethodName    = "/teleport.presence.v1.PresenceService/GetRemoteCluster"
-	PresenceService_ListRemoteClusters_FullMethodName  = "/teleport.presence.v1.PresenceService/ListRemoteClusters"
-	PresenceService_UpdateRemoteCluster_FullMethodName = "/teleport.presence.v1.PresenceService/UpdateRemoteCluster"
-	PresenceService_DeleteRemoteCluster_FullMethodName = "/teleport.presence.v1.PresenceService/DeleteRemoteCluster"
-	PresenceService_ListReverseTunnels_FullMethodName  = "/teleport.presence.v1.PresenceService/ListReverseTunnels"
-	PresenceService_UpsertReverseTunnel_FullMethodName = "/teleport.presence.v1.PresenceService/UpsertReverseTunnel"
-	PresenceService_DeleteReverseTunnel_FullMethodName = "/teleport.presence.v1.PresenceService/DeleteReverseTunnel"
-	PresenceService_GetRelayServer_FullMethodName      = "/teleport.presence.v1.PresenceService/GetRelayServer"
-	PresenceService_ListRelayServers_FullMethodName    = "/teleport.presence.v1.PresenceService/ListRelayServers"
-	PresenceService_DeleteRelayServer_FullMethodName   = "/teleport.presence.v1.PresenceService/DeleteRelayServer"
+	PresenceService_GetRemoteCluster_FullMethodName     = "/teleport.presence.v1.PresenceService/GetRemoteCluster"
+	PresenceService_ListRemoteClusters_FullMethodName   = "/teleport.presence.v1.PresenceService/ListRemoteClusters"
+	PresenceService_UpdateRemoteCluster_FullMethodName  = "/teleport.presence.v1.PresenceService/UpdateRemoteCluster"
+	PresenceService_DeleteRemoteCluster_FullMethodName  = "/teleport.presence.v1.PresenceService/DeleteRemoteCluster"
+	PresenceService_ListReverseTunnels_FullMethodName   = "/teleport.presence.v1.PresenceService/ListReverseTunnels"
+	PresenceService_UpsertReverseTunnel_FullMethodName  = "/teleport.presence.v1.PresenceService/UpsertReverseTunnel"
+	PresenceService_DeleteReverseTunnel_FullMethodName  = "/teleport.presence.v1.PresenceService/DeleteReverseTunnel"
+	PresenceService_GetRelayServer_FullMethodName       = "/teleport.presence.v1.PresenceService/GetRelayServer"
+	PresenceService_ListRelayServers_FullMethodName     = "/teleport.presence.v1.PresenceService/ListRelayServers"
+	PresenceService_DeleteRelayServer_FullMethodName    = "/teleport.presence.v1.PresenceService/DeleteRelayServer"
+	PresenceService_ListUnifiedInstances_FullMethodName = "/teleport.presence.v1.PresenceService/ListUnifiedInstances"
 )
 
 // PresenceServiceClient is the client API for PresenceService service.
@@ -73,6 +75,9 @@ type PresenceServiceClient interface {
 	ListRelayServers(ctx context.Context, in *ListRelayServersRequest, opts ...grpc.CallOption) (*ListRelayServersResponse, error)
 	// DeleteRelayServer deletes a relay_server resource by name.
 	DeleteRelayServer(ctx context.Context, in *DeleteRelayServerRequest, opts ...grpc.CallOption) (*DeleteRelayServerResponse, error)
+	// ListUnifiedInstances returns a page of teleport instances and bot_instances from the inventory cache.
+	// This API will refuse any requests when the inventory cache is unhealthy or not yet fully initialized.
+	ListUnifiedInstances(ctx context.Context, in *v1.ListUnifiedInstancesRequest, opts ...grpc.CallOption) (*v1.ListUnifiedInstancesResponse, error)
 }
 
 type presenceServiceClient struct {
@@ -183,6 +188,16 @@ func (c *presenceServiceClient) DeleteRelayServer(ctx context.Context, in *Delet
 	return out, nil
 }
 
+func (c *presenceServiceClient) ListUnifiedInstances(ctx context.Context, in *v1.ListUnifiedInstancesRequest, opts ...grpc.CallOption) (*v1.ListUnifiedInstancesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(v1.ListUnifiedInstancesResponse)
+	err := c.cc.Invoke(ctx, PresenceService_ListUnifiedInstances_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PresenceServiceServer is the server API for PresenceService service.
 // All implementations must embed UnimplementedPresenceServiceServer
 // for forward compatibility.
@@ -209,6 +224,9 @@ type PresenceServiceServer interface {
 	ListRelayServers(context.Context, *ListRelayServersRequest) (*ListRelayServersResponse, error)
 	// DeleteRelayServer deletes a relay_server resource by name.
 	DeleteRelayServer(context.Context, *DeleteRelayServerRequest) (*DeleteRelayServerResponse, error)
+	// ListUnifiedInstances returns a page of teleport instances and bot_instances from the inventory cache.
+	// This API will refuse any requests when the inventory cache is unhealthy or not yet fully initialized.
+	ListUnifiedInstances(context.Context, *v1.ListUnifiedInstancesRequest) (*v1.ListUnifiedInstancesResponse, error)
 	mustEmbedUnimplementedPresenceServiceServer()
 }
 
@@ -248,6 +266,9 @@ func (UnimplementedPresenceServiceServer) ListRelayServers(context.Context, *Lis
 }
 func (UnimplementedPresenceServiceServer) DeleteRelayServer(context.Context, *DeleteRelayServerRequest) (*DeleteRelayServerResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteRelayServer not implemented")
+}
+func (UnimplementedPresenceServiceServer) ListUnifiedInstances(context.Context, *v1.ListUnifiedInstancesRequest) (*v1.ListUnifiedInstancesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListUnifiedInstances not implemented")
 }
 func (UnimplementedPresenceServiceServer) mustEmbedUnimplementedPresenceServiceServer() {}
 func (UnimplementedPresenceServiceServer) testEmbeddedByValue()                         {}
@@ -450,6 +471,24 @@ func _PresenceService_DeleteRelayServer_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PresenceService_ListUnifiedInstances_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(v1.ListUnifiedInstancesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PresenceServiceServer).ListUnifiedInstances(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PresenceService_ListUnifiedInstances_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PresenceServiceServer).ListUnifiedInstances(ctx, req.(*v1.ListUnifiedInstancesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PresenceService_ServiceDesc is the grpc.ServiceDesc for PresenceService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -496,6 +535,10 @@ var PresenceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteRelayServer",
 			Handler:    _PresenceService_DeleteRelayServer_Handler,
+		},
+		{
+			MethodName: "ListUnifiedInstances",
+			Handler:    _PresenceService_ListUnifiedInstances_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

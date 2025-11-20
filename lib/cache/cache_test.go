@@ -121,9 +121,9 @@ func TestNodesDontCacheHighVolumeResources(t *testing.T) {
 	}
 }
 
-// testPack contains pack of
+// TestPack contains pack of
 // services used for test run
-type testPack struct {
+type TestPack struct {
 	dataDir                 string
 	backend                 *backend.Wrapper
 	eventsC                 chan Event
@@ -287,7 +287,7 @@ func (f *testFuncs[T]) cacheListAll(ctx context.Context) ([]T, error) {
 	return stream.Collect(clientutils.Resources(ctx, f.cacheList))
 }
 
-func (t *testPack) Close() {
+func (t *TestPack) Close() {
 	var errors []error
 	if t.backend != nil {
 		errors = append(errors, t.backend.Close())
@@ -300,17 +300,17 @@ func (t *testPack) Close() {
 	}
 }
 
-func newPackForAuth(t *testing.T) *testPack {
+func newPackForAuth(t *testing.T) *TestPack {
 	return newTestPack(t, ForAuth)
 }
 
-func newTestPack(t *testing.T, setupConfig SetupConfigFn, opts ...packOption) *testPack {
+func newTestPack(t *testing.T, setupConfig SetupConfigFn, opts ...packOption) *TestPack {
 	pack, err := newPack(t, setupConfig, opts...)
 	require.NoError(t, err)
 	return pack
 }
 
-func newTestPackWithoutCache(t *testing.T) *testPack {
+func NewTestPackWithoutCache(t *testing.T) *TestPack {
 	pack, err := newPackWithoutCache(t.TempDir())
 	require.NoError(t, err)
 	return pack
@@ -331,14 +331,14 @@ func ignoreKinds(kinds []types.WatchKind) packOption {
 }
 
 // newPackWithoutCache returns a new test pack without creating cache
-func newPackWithoutCache(dir string, opts ...packOption) (*testPack, error) {
+func newPackWithoutCache(dir string, opts ...packOption) (*TestPack, error) {
 	ctx := context.Background()
 	var cfg packCfg
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 
-	p := &testPack{
+	p := &TestPack{
 		dataDir: dir,
 	}
 	bk, err := memory.New(memory.Config{
@@ -529,7 +529,7 @@ func newPackWithoutCache(dir string, opts ...packOption) (*testPack, error) {
 }
 
 // newPack returns a new test pack or fails the test on error
-func newPack(t testing.TB, setupConfig func(c Config) Config, opts ...packOption) (*testPack, error) {
+func newPack(t testing.TB, setupConfig func(c Config) Config, opts ...packOption) (*TestPack, error) {
 	t.Helper()
 
 	ctx := t.Context()
@@ -789,7 +789,7 @@ func TestCompletenessInit(t *testing.T) {
 	ctx := context.Background()
 	const caCount = 100
 	const inits = 20
-	p := newTestPackWithoutCache(t)
+	p := NewTestPackWithoutCache(t)
 	t.Cleanup(p.Close)
 
 	// put lots of CAs in the backend
@@ -881,7 +881,7 @@ func TestCompletenessReset(t *testing.T) {
 	ctx := context.Background()
 	const caCount = 100
 	const resets = 20
-	p := newTestPackWithoutCache(t)
+	p := NewTestPackWithoutCache(t)
 	t.Cleanup(p.Close)
 
 	// put lots of CAs in the backend
@@ -1145,7 +1145,7 @@ func TestListResources_NodesTTLVariant(t *testing.T) {
 
 func initStrategy(t *testing.T) {
 	ctx := context.Background()
-	p := newTestPackWithoutCache(t)
+	p := NewTestPackWithoutCache(t)
 	t.Cleanup(p.Close)
 
 	p.backend.SetReadError(trace.ConnectionProblem(nil, "backend is out"))
@@ -1357,13 +1357,13 @@ func withSkipPaginationTest() optionsFunc {
 }
 
 // testResources is a wrapper for testing resources conforming to types.Resource
-func testResources[T types.Resource](t *testing.T, p *testPack, funcs testFuncs[T], opts ...optionsFunc) {
+func testResources[T types.Resource](t *testing.T, p *TestPack, funcs testFuncs[T], opts ...optionsFunc) {
 	funcs.resource = defaultResourceOps[T]()
 	testResourcesInternal(t, p, funcs, opts...)
 }
 
 // testResources153 is a wrapper for testing resources conforming to types.Resource153
-func testResources153[T types.Resource153](t *testing.T, p *testPack, funcs testFuncs[T], opts ...optionsFunc) {
+func testResources153[T types.Resource153](t *testing.T, p *TestPack, funcs testFuncs[T], opts ...optionsFunc) {
 	// TODO(rana): Add broader support for virtual resources in list operations.
 	// Virtual resources change the total count returned by list operations,
 	// and is unexpected for the current test. When updated, we can remove virtual
@@ -1374,7 +1374,7 @@ func testResources153[T types.Resource153](t *testing.T, p *testPack, funcs test
 }
 
 // testResourcesInternal is a generic tester for resources.
-func testResourcesInternal[T any](t *testing.T, p *testPack, funcs testFuncs[T], opts ...optionsFunc) {
+func testResourcesInternal[T any](t *testing.T, p *TestPack, funcs testFuncs[T], opts ...optionsFunc) {
 	t.Helper()
 	require.NotNil(t, funcs.resource)
 	require.NotNil(t, funcs.resource.Name)
@@ -2662,7 +2662,7 @@ func fetchEvent(t *testing.T, w types.Watcher, timeout time.Duration) types.Even
 	return ev
 }
 
-func testResourcePagination[T any](t *testing.T, p *testPack, funcs testFuncs[T]) {
+func testResourcePagination[T any](t *testing.T, p *TestPack, funcs testFuncs[T]) {
 	t.Helper()
 
 	const defaultTestPageSize = 2

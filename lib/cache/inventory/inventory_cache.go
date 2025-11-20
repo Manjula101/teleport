@@ -14,12 +14,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-// TODO(rudream): move this to lib/cache/inventory
-package cache
+package inventory
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/base32"
 	"log/slog"
 	"math"
 	"sync"
@@ -36,7 +35,9 @@ import (
 	machineidv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/machineid/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils"
+	"github.com/gravitational/teleport/lib/cache"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/utils/sortcache"
 )
 
 const (
@@ -46,6 +47,20 @@ const (
 	// botInstancePrefix is the backend prefix for bot instances.
 	botInstancePrefix = "bot_instance"
 )
+
+// instanceTypeToKind converts an InstanceType enum to a resource kind string.
+func instanceTypeToKind(instanceType inventoryv1.InstanceType) string {
+	switch instanceType {
+	case inventoryv1.InstanceType_INSTANCE_TYPE_INSTANCE:
+		return types.KindInstance
+	case inventoryv1.InstanceType_INSTANCE_TYPE_BOT_INSTANCE:
+		return types.KindBotInstance
+	default:
+		return ""
+	}
+}
+
+type bytestring = string
 
 type inventoryIndex string
 
@@ -60,8 +75,7 @@ const (
 	inventoryTypeIndex inventoryIndex = "type"
 
 	// inventoryIDIndex allows lookup by instance ID.
-	// For instances: <instance id>
-	// For bot instances: <bot name>/<instance id> (composite key for uniqueness)
+	// Uses ordered.Encode(bot name, instance ID, kind) where the bot name is "" for regular instances
 	inventoryIDIndex inventoryIndex = "id"
 )
 
@@ -77,18 +91,20 @@ func (u *inventoryInstance) isInstance() bool {
 }
 
 // getInstanceID returns a unique ID for this instance.
-// For instances, this is the instance ID. For bot names, this is `<bot name/><instance id>`.
+// For instances, this is the instance ID. For bot instances, this is the bot instance ID
 func (u *inventoryInstance) getInstanceID() string {
 	if u.isInstance() {
 		return u.instance.GetName()
 	}
-	botName := u.bot.GetSpec().GetBotName()
-	instanceID := u.bot.GetSpec().GetInstanceId()
-	// Fallback to metadata name if instance ID is not set
-	if instanceID == "" {
-		instanceID = u.bot.GetMetadata().GetName()
+	return u.bot.GetSpec().GetInstanceId()
+}
+
+// getBotName returns the bot name for bot instances, or an empty string for regular instances.
+func (u *inventoryInstance) getBotName() string {
+	if u.isInstance() {
+		return ""
 	}
-	return botName + "/" + instanceID
+	return u.bot.GetSpec().GetBotName()
 }
 
 // getKind returns the resource kind for this instance.
@@ -100,7 +116,7 @@ func (u *inventoryInstance) getKind() string {
 }
 
 // getAlphabeticalKey returns the composite key for alphabetical sorting.
-func (u *inventoryInstance) getAlphabeticalKey() string {
+func (u *inventoryInstance) getAlphabeticalKey() bytestring {
 	var name, id string
 	if u.isInstance() {
 		name = u.instance.GetHostname()
@@ -108,17 +124,13 @@ func (u *inventoryInstance) getAlphabeticalKey() string {
 	} else {
 		name = u.bot.GetSpec().GetBotName()
 		id = u.bot.GetSpec().GetInstanceId()
-		// Fallback to metadata name if instance ID is not set
-		if id == "" {
-			id = u.bot.GetMetadata().GetName()
-		}
 	}
 
-	return string(ordered.Encode(name, id, u.getKind()))
+	return bytestring(ordered.Encode(name, id, u.getKind()))
 }
 
 // getTypeKey returns the composite key for sorting by type.
-func (u *inventoryInstance) getTypeKey() string {
+func (u *inventoryInstance) getTypeKey() bytestring {
 	var name, id string
 	if u.isInstance() {
 		name = u.instance.GetHostname()
@@ -126,19 +138,17 @@ func (u *inventoryInstance) getTypeKey() string {
 	} else {
 		name = u.bot.GetSpec().GetBotName()
 		id = u.bot.GetSpec().GetInstanceId()
-		// Fallback to metadata name if instance ID is not set
-		if id == "" {
-			id = u.bot.GetMetadata().GetName()
-		}
 	}
 
-	return string(ordered.Encode(u.getKind(), name, id))
+	return bytestring(ordered.Encode(u.getKind(), name, id))
 }
 
 // getIDKey returns the key for lookup by instance ID.
-// We use ordered encoding for safe lexicographic ordering
-func (u *inventoryInstance) getIDKey() string {
-	return string(ordered.Encode(u.getInstanceID()))
+// We use ordered encoding with (bot name, instance ID, kind) to ensure uniqueness and safe lexicographic ordering.
+// For instances this is ordered.Encode("", instance ID, "instance")
+// For bot instances this is ordered.Encode(bot name, instance ID, "bot_instance")
+func (u *inventoryInstance) getIDKey() bytestring {
+	return bytestring(ordered.Encode(u.getBotName(), u.getInstanceID(), u.getKind()))
 }
 
 // clone returns a deep copy of the unified instance.
@@ -152,7 +162,7 @@ func (u *inventoryInstance) clone() *inventoryInstance {
 // InventoryCacheConfig holds the configuration parameters for the InventoryCache.
 type InventoryCacheConfig struct {
 	// PrimaryCache is Teleport's primary cache.
-	PrimaryCache *Cache
+	PrimaryCache *cache.Cache
 
 	// Events is the events service for watching backend events.
 	Events types.Events
@@ -160,8 +170,11 @@ type InventoryCacheConfig struct {
 	// Inventory is the inventory service.
 	Inventory services.Inventory
 
-	// BotInstanceCache is the service for reading bot instances.
-	BotInstanceCache services.BotInstance
+	// BotInstanceBackend is the backend service for reading bot instances.
+	// This must be the backend and not a cache since the watcher is from the backend,
+	// so the OpInit event might refer to a "time" after the current "time" of a cache, which could cause
+	// us to miss items that are not yet in the cache but were already written in the backend.
+	BotInstanceBackend services.BotInstance
 
 	// TargetVersion is the target Teleport version for the cluster.
 	TargetVersion string
@@ -179,8 +192,8 @@ func (c *InventoryCacheConfig) CheckAndSetDefaults() error {
 	if c.Inventory == nil {
 		return trace.BadParameter("missing Inventory")
 	}
-	if c.BotInstanceCache == nil {
-		return trace.BadParameter("missing BotInstanceCache")
+	if c.BotInstanceBackend == nil {
+		return trace.BadParameter("missing BotInstanceBackend")
 	}
 
 	if c.Logger == nil {
@@ -195,16 +208,16 @@ type InventoryCache struct {
 	mu sync.RWMutex
 	// healthy is whether the cache is healthy and ready to serve requests.
 	healthy atomic.Bool
-	// initDone is a channel used to ensure clean shutdowns.
-	initDone chan struct{}
+	// done is a channel used to ensure clean shutdowns.
+	done chan struct{}
 
 	cfg InventoryCacheConfig
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// store is the unified sortcache that holds both teleport and bot instances.
-	store *store[*inventoryInstance, inventoryIndex]
+	// cache is the unified sortcache that holds both teleport and bot instances.
+	cache *sortcache.SortCache[*inventoryInstance, inventoryIndex]
 }
 
 func NewInventoryCache(cfg InventoryCacheConfig) (*InventoryCache, error) {
@@ -218,32 +231,25 @@ func NewInventoryCache(cfg InventoryCacheConfig) (*InventoryCache, error) {
 		cfg: cfg,
 
 		// Create the sortcache
-		store: newStore(
-			"unified_instance",
-			func(u *inventoryInstance) *inventoryInstance {
-				return u.clone()
+		cache: sortcache.New(sortcache.Config[*inventoryInstance, inventoryIndex]{
+			Indexes: map[inventoryIndex]func(*inventoryInstance) string{
+				inventoryAlphabeticalIndex: (*inventoryInstance).getAlphabeticalKey,
+				inventoryTypeIndex:         (*inventoryInstance).getTypeKey,
+				inventoryIDIndex:           (*inventoryInstance).getIDKey,
 			},
-			map[inventoryIndex]func(*inventoryInstance) string{
-				inventoryAlphabeticalIndex: func(u *inventoryInstance) string {
-					return u.getAlphabeticalKey()
-				},
-				inventoryTypeIndex: func(u *inventoryInstance) string {
-					return u.getTypeKey()
-				},
-				inventoryIDIndex: func(u *inventoryInstance) string {
-					return u.getIDKey()
-				},
-			},
-		),
+		}),
 
 		// Create a channel that will close when the initialization is done.
-		initDone: make(chan struct{}),
+		done: make(chan struct{}),
 
 		ctx:    ctx,
 		cancel: cancel,
 	}
 
-	go ic.initializeAndWatchWithRetry(ctx)
+	go func() {
+		defer close(ic.done)
+		ic.initializeAndWatchWithRetry(ctx)
+	}()
 
 	return ic, nil
 }
@@ -255,12 +261,13 @@ func (ic *InventoryCache) IsHealthy() bool {
 
 func (ic *InventoryCache) Close() error {
 	ic.cancel()
-	// Wait for initDone channel to finish so we can close gracefully.
-	<-ic.initDone
+	// Wait for done channel to finish so we can close gracefully.
+	<-ic.done
 	return nil
 }
 
 // calculateReadsPerSecond calculates the rate limit to use for backend reads based on cluster size.
+// The curve is intentionalled capped to stay below the 90s watcher grace period even in extremely large clusters.
 // With this implementation, these are some of the expected rate limits and corresponding total times based on cluster size:
 //
 // Cluster size | Reads per second | Total time to finish all reads
@@ -289,32 +296,27 @@ func calculateReadsPerSecond(clusterSize int) int {
 
 // initializeAndWatchWithRetry runs initializeAndWatch with a retry every 10 seconds if it fails.
 func (ic *InventoryCache) initializeAndWatchWithRetry(ctx context.Context) {
-	defer close(ic.initDone)
-
 	const retryInterval = 10 * time.Second
 
 	for {
 		ic.cfg.Logger.DebugContext(ctx, "Attempting to initialize inventory cache")
 
 		// Attempt to initialize and watch
-		if err := ic.initializeAndWatch(ctx); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-
-			ic.cfg.Logger.WarnContext(ctx, "Failed to initialize inventory cache, retrying in 10 seconds",
-				"error", err)
-
-			// Wait before retrying
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(retryInterval):
-			}
-			continue
+		err := ic.initializeAndWatch(ctx)
+		if ctx.Err() != nil {
+			ic.cfg.Logger.DebugContext(ctx, "Exiting from inventory cache watch loop because context was cancelled")
+			return
 		}
 
-		return
+		ic.cfg.Logger.WarnContext(ctx, "Failed to initialize inventory cache, retrying in 10 seconds",
+			"error", err)
+
+		// Wait before retrying
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retryInterval):
+		}
 	}
 }
 
@@ -338,7 +340,7 @@ func (ic *InventoryCache) initializeAndWatch(ctx context.Context) error {
 	}
 
 	// Calculate the rate limit to use.
-	primaryCacheSize := ic.cfg.PrimaryCache.GetCacheSize()
+	primaryCacheSize := ic.cfg.PrimaryCache.GetResourceCount()
 	readsPerSecond := calculateReadsPerSecond(primaryCacheSize)
 
 	// Populate the cache with teleport instance and bot instances.
@@ -349,10 +351,10 @@ func (ic *InventoryCache) initializeAndWatch(ctx context.Context) error {
 	// Mark cache as healthy.
 	ic.healthy.Store(true)
 
-	// This runs infinitely until the context is cancelled, so the return below won't be hit until shutdown.
+	// This runs infinitely until the context is cancelled.
 	ic.processEvents(ctx, watcher)
 
-	return nil
+	return ctx.Err()
 }
 
 // waitForPrimaryCacheInit waits for the primary cache to be initialized.
@@ -429,10 +431,7 @@ func (ic *InventoryCache) populateInstances(ctx context.Context, limiter *rate.L
 
 		// Add it to the cache
 		ui := &inventoryInstance{instance: instanceV1}
-		if err := ic.store.put(ui); err != nil {
-			ic.cfg.Logger.WarnContext(ctx, "Failed to add instance to cache", "instance", instanceV1.GetName(), "error", err)
-			continue
-		}
+		ic.cache.Put(ui.clone())
 	}
 
 	return trace.Wrap(instanceStream.Done())
@@ -447,7 +446,7 @@ func (ic *InventoryCache) populateBotInstances(ctx context.Context, limiter *rat
 			return trace.Wrap(err)
 		}
 
-		botInstances, nextToken, err := ic.cfg.BotInstanceCache.ListBotInstances(
+		botInstances, nextToken, err := ic.cfg.BotInstanceBackend.ListBotInstances(
 			ctx,
 			defaults.DefaultChunkSize,
 			pageToken,
@@ -460,10 +459,7 @@ func (ic *InventoryCache) populateBotInstances(ctx context.Context, limiter *rat
 		for _, botInstance := range botInstances {
 			// Add it to the cache
 			ui := &inventoryInstance{bot: botInstance}
-			if err := ic.store.put(ui); err != nil {
-				ic.cfg.Logger.WarnContext(ctx, "Failed to add bot instance to cache", "bot_instance", botInstance.Metadata.Name, "error", err)
-				continue
-			}
+			ic.cache.Put(ui.clone())
 		}
 
 		if nextToken == "" || len(botInstances) == 0 {
@@ -510,16 +506,12 @@ func (ic *InventoryCache) processPutEvent(event types.Event) error {
 	case *types.InstanceV1:
 		// Add/update it in the cache
 		ui := &inventoryInstance{instance: resource}
-		if err := ic.store.put(ui); err != nil {
-			return trace.Wrap(err)
-		}
+		ic.cache.Put(ui.clone())
 	case types.Resource153UnwrapperT[*machineidv1.BotInstance]:
 		// Handle bot instances wrapped in Resource153ToLegacy adapter
 		botInstance := resource.UnwrapT()
 		ui := &inventoryInstance{bot: botInstance}
-		if err := ic.store.put(ui); err != nil {
-			return trace.Wrap(err)
-		}
+		ic.cache.Put(ui.clone())
 	}
 
 	return nil
@@ -532,30 +524,19 @@ func (ic *InventoryCache) processDeleteEvent(event types.Event) error {
 	case *types.InstanceV1:
 		// Find and remove the instance from the cache.
 		instanceID := resource.GetName()
-		encodedID := string(ordered.Encode(instanceID))
-		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
-			ic.store.delete(existing)
-		}
+		encodedID := string(ordered.Encode("", instanceID, types.KindInstance))
+		ic.cache.Delete(inventoryIDIndex, encodedID)
 	case *types.ResourceHeader:
 		// For regular instances, use the instance ID directly
 		instanceID := resource.GetName()
-		encodedID := string(ordered.Encode(instanceID))
-		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
-			ic.store.delete(existing)
-		}
+		encodedID := string(ordered.Encode("", instanceID, types.KindInstance))
+		ic.cache.Delete(inventoryIDIndex, encodedID)
 	case types.Resource153UnwrapperT[*machineidv1.BotInstance]:
 		botInstance := resource.UnwrapT()
 		botName := botInstance.GetSpec().GetBotName()
 		instanceID := botInstance.GetSpec().GetInstanceId()
-		// Fallback to metadata name if instance ID is not set
-		if instanceID == "" {
-			instanceID = botInstance.GetMetadata().GetName()
-		}
-		key := botName + "/" + instanceID
-		encodedID := string(ordered.Encode(key))
-		if existing, err := ic.store.get(inventoryIDIndex, encodedID); err == nil {
-			ic.store.delete(existing)
-		}
+		encodedID := string(ordered.Encode(botName, instanceID, types.KindBotInstance))
+		ic.cache.Delete(inventoryIDIndex, encodedID)
 	}
 
 	return nil
@@ -572,21 +553,14 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 		req.PageSize = defaults.DefaultChunkSize
 	}
 
-	// Decode the PageToken from base64
+	// Decode the PageToken from base32hex
 	var startKey string
 	if req.PageToken != "" {
-		decoded, err := base64.StdEncoding.DecodeString(req.PageToken)
+		decoded, err := base32.HexEncoding.WithPadding(base32.NoPadding).DecodeString(req.PageToken)
 		if err != nil {
 			return nil, trace.BadParameter("invalid page token: %v", err)
 		}
 		startKey = string(decoded)
-	} else {
-		// If no kinds filter is specified or multiple kinds are, start from the beginning.
-		// If we're only filtering for 1 kind, use type index with kind prefix.
-		if req.Filter != nil && len(req.Filter.InstanceTypes) == 1 {
-			kind := req.Filter.InstanceTypes[0]
-			startKey = string(ordered.Encode(kind))
-		}
 	}
 
 	var items []*inventoryv1.UnifiedInstanceItem
@@ -595,18 +569,18 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 	index := inventoryAlphabeticalIndex
 	var endKey string
 	// Determine if we should use the type index.
-	useTypeIndex := req.Filter != nil && len(req.Filter.InstanceTypes) == 1
+	useTypeIndex := req.GetFilter() != nil && len(req.GetFilter().GetInstanceTypes()) == 1
 	if useTypeIndex {
 		index = inventoryTypeIndex
 		if req.PageToken == "" {
-			kind := req.Filter.InstanceTypes[0]
-			// Use \xff to create an upper bound for this kind prefix
-			endKey = string(ordered.Encode(kind)) + "\xff"
+			kind := instanceTypeToKind(req.GetFilter().GetInstanceTypes()[0])
+			startKey = string(ordered.Encode(kind))
+			endKey = string(ordered.Encode(kind, ordered.Inf))
 		}
 	}
 
-	for sf := range ic.store.cache.Ascend(index, startKey, endKey) {
-		if !ic.matchesFilter(sf, req.Filter) {
+	for sf := range ic.cache.Ascend(index, startKey, endKey) {
+		if !ic.matchesFilter(sf, req.GetFilter()) {
 			continue
 		}
 
@@ -617,8 +591,8 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 			} else {
 				rawKey = sf.getTypeKey()
 			}
-			// Encode the next page token to base64
-			nextPageToken = base64.StdEncoding.EncodeToString([]byte(rawKey))
+			// Encode the next page token to base32hex
+			nextPageToken = base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(rawKey))
 			break
 		}
 

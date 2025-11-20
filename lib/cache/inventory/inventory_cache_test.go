@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-package cache
+package inventory
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/base32"
 	"fmt"
 	"testing"
 	"testing/synctest"
@@ -35,6 +35,7 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/backend/memory"
+	"github.com/gravitational/teleport/lib/cache"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/services/local"
 	"github.com/gravitational/teleport/lib/services/local/generic"
@@ -51,7 +52,8 @@ func TestInventoryCache(t *testing.T) {
 		require.NoError(t, err)
 		defer bk.Close()
 
-		p := newTestPack(t, ForAuth)
+		p, err := cache.SetupTestCache(t, cache.ForAuth)
+		require.NoError(t, err)
 		defer p.Close()
 
 		// Create mock instances
@@ -182,7 +184,8 @@ func TestInventoryCache(t *testing.T) {
 					Name: "bot1",
 				},
 				Spec: &machineidv1.BotInstanceSpec{
-					BotName: "bot-1",
+					BotName:    "bot-1",
+					InstanceId: "bot1",
 				},
 				Status: &machineidv1.BotInstanceStatus{
 					LatestHeartbeats: []*machineidv1.BotInstanceStatusHeartbeat{
@@ -198,7 +201,8 @@ func TestInventoryCache(t *testing.T) {
 					Name: "bot2",
 				},
 				Spec: &machineidv1.BotInstanceSpec{
-					BotName: "bot-2",
+					BotName:    "bot-2",
+					InstanceId: "bot2",
 				},
 				Status: &machineidv1.BotInstanceStatus{
 					LatestHeartbeats: []*machineidv1.BotInstanceStatusHeartbeat{
@@ -214,7 +218,8 @@ func TestInventoryCache(t *testing.T) {
 					Name: "bot3",
 				},
 				Spec: &machineidv1.BotInstanceSpec{
-					BotName: "bot-3",
+					BotName:    "bot-3",
+					InstanceId: "bot3",
 				},
 				Status: &machineidv1.BotInstanceStatus{
 					LatestHeartbeats: []*machineidv1.BotInstanceStatusHeartbeat{
@@ -230,7 +235,8 @@ func TestInventoryCache(t *testing.T) {
 					Name: "bot4",
 				},
 				Spec: &machineidv1.BotInstanceSpec{
-					BotName: "bot-4",
+					BotName:    "bot-4",
+					InstanceId: "bot4",
 				},
 				Status: &machineidv1.BotInstanceStatus{
 					LatestHeartbeats: []*machineidv1.BotInstanceStatusHeartbeat{
@@ -248,11 +254,11 @@ func TestInventoryCache(t *testing.T) {
 
 		// Create inventory cache
 		inventoryCache, err := NewInventoryCache(InventoryCacheConfig{
-			PrimaryCache:     p.cache,
-			Events:           local.NewEventsService(bk),
-			Inventory:        mockInventory,
-			BotInstanceCache: mockBotCache,
-			TargetVersion:    "18.2.0",
+			PrimaryCache:       p.Cache,
+			Events:             local.NewEventsService(bk),
+			Inventory:          mockInventory,
+			BotInstanceBackend: mockBotCache,
+			TargetVersion:      "18.2.0",
 		})
 		require.NoError(t, err)
 		defer inventoryCache.Close()
@@ -302,8 +308,8 @@ func TestInventoryCache(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, firstPageResp.Items, 5, "first page should have 5 items, got %d", len(firstPageResp.Items))
 
-		// The next page token should be the key of the first item on the next page (6th item)
-		expectedNextPageToken := base64.StdEncoding.EncodeToString([]byte(string(ordered.Encode("bot-3", "bot3", types.KindBotInstance))))
+		// The next page token should be the alphabetical key of the first item on the next page (6th item)
+		expectedNextPageToken := base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(string(ordered.Encode("bot-3", "bot3", types.KindBotInstance))))
 		require.Equal(t, expectedNextPageToken, firstPageResp.NextPageToken)
 
 		// Fetch another page of 5, this time using the page token from before
@@ -315,7 +321,7 @@ func TestInventoryCache(t *testing.T) {
 		require.Len(t, secondPageResp.Items, 5, "second page should have 5 items, got %d", len(secondPageResp.Items))
 
 		// The returned next page token should be the alphabetical key of the first item on the third page (11th item)
-		expectedSecondPageToken := base64.StdEncoding.EncodeToString([]byte(string(ordered.Encode("node1.example.com", "agent3", types.KindInstance))))
+		expectedSecondPageToken := base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(string(ordered.Encode("node1.example.com", "agent3", types.KindInstance))))
 		require.Equal(t, expectedSecondPageToken, secondPageResp.NextPageToken, "second page next token should match expected format")
 
 		// Fetch another page of 5, using the page token from before
@@ -332,7 +338,7 @@ func TestInventoryCache(t *testing.T) {
 		instancesOnlyResp, err := inventoryCache.ListUnifiedInstances(ctx, &inventoryv1.ListUnifiedInstancesRequest{
 			PageSize: 100,
 			Filter: &inventoryv1.ListUnifiedInstancesFilter{
-				InstanceTypes: []string{types.KindInstance},
+				InstanceTypes: []inventoryv1.InstanceType{inventoryv1.InstanceType_INSTANCE_TYPE_INSTANCE},
 			},
 		})
 		require.NoError(t, err)
@@ -341,7 +347,7 @@ func TestInventoryCache(t *testing.T) {
 		botsOnlyResp, err := inventoryCache.ListUnifiedInstances(ctx, &inventoryv1.ListUnifiedInstancesRequest{
 			PageSize: 100,
 			Filter: &inventoryv1.ListUnifiedInstancesFilter{
-				InstanceTypes: []string{types.KindBotInstance},
+				InstanceTypes: []inventoryv1.InstanceType{inventoryv1.InstanceType_INSTANCE_TYPE_BOT_INSTANCE},
 			},
 		})
 		require.NoError(t, err)
@@ -360,7 +366,8 @@ func TestInventoryCacheWatcher(t *testing.T) {
 		require.NoError(t, err)
 		defer bk.Close()
 
-		p := newTestPack(t, ForAuth)
+		p, err := cache.SetupTestCache(t, cache.ForAuth)
+		require.NoError(t, err)
 		defer p.Close()
 
 		// Create 2 instances
@@ -406,7 +413,8 @@ func TestInventoryCacheWatcher(t *testing.T) {
 					Name: "bot1",
 				},
 				Spec: &machineidv1.BotInstanceSpec{
-					BotName: "bot-1",
+					BotName:    "bot-1",
+					InstanceId: "bot1",
 				},
 				Status: &machineidv1.BotInstanceStatus{
 					LatestHeartbeats: []*machineidv1.BotInstanceStatusHeartbeat{
@@ -422,7 +430,8 @@ func TestInventoryCacheWatcher(t *testing.T) {
 					Name: "bot2",
 				},
 				Spec: &machineidv1.BotInstanceSpec{
-					BotName: "bot-2",
+					BotName:    "bot-2",
+					InstanceId: "bot2",
 				},
 				Status: &machineidv1.BotInstanceStatus{
 					LatestHeartbeats: []*machineidv1.BotInstanceStatusHeartbeat{
@@ -444,11 +453,11 @@ func TestInventoryCacheWatcher(t *testing.T) {
 		}
 
 		inventoryCache, err := NewInventoryCache(InventoryCacheConfig{
-			Inventory:        mockInventoryService,
-			BotInstanceCache: mockBotInstanceCache,
-			Events:           local.NewEventsService(bk),
-			PrimaryCache:     p.cache,
-			TargetVersion:    "18.2.0",
+			Inventory:          mockInventoryService,
+			BotInstanceBackend: mockBotInstanceCache,
+			Events:             local.NewEventsService(bk),
+			PrimaryCache:       p.Cache,
+			TargetVersion:      "18.2.0",
 		})
 		require.NoError(t, err)
 		defer inventoryCache.Close()
@@ -487,7 +496,8 @@ func TestInventoryCacheWatcher(t *testing.T) {
 				Name: "bot3",
 			},
 			Spec: &machineidv1.BotInstanceSpec{
-				BotName: "new-bot",
+				BotName:    "new-bot",
+				InstanceId: "bot3",
 			},
 			Status: &machineidv1.BotInstanceStatus{
 				LatestHeartbeats: []*machineidv1.BotInstanceStatusHeartbeat{
@@ -548,7 +558,8 @@ func TestInventoryCacheRateLimiting(t *testing.T) {
 		require.NoError(t, err)
 		defer bk.Close()
 
-		p := newTestPack(t, ForAuth)
+		p, err := cache.SetupTestCache(t, cache.ForAuth)
+		require.NoError(t, err)
 		defer p.Close()
 
 		// Create 300 instances
@@ -573,11 +584,11 @@ func TestInventoryCacheRateLimiting(t *testing.T) {
 		mockBotCache := &mockBotInstanceCache{bots: nil}
 
 		inventoryCache, err := NewInventoryCache(InventoryCacheConfig{
-			PrimaryCache:     p.cache,
-			Events:           local.NewEventsService(bk),
-			Inventory:        mockInventory,
-			BotInstanceCache: mockBotCache,
-			TargetVersion:    "18.2.0",
+			PrimaryCache:       p.Cache,
+			Events:             local.NewEventsService(bk),
+			Inventory:          mockInventory,
+			BotInstanceBackend: mockBotCache,
+			TargetVersion:      "18.2.0",
 		})
 		require.NoError(t, err)
 		defer inventoryCache.Close()
@@ -587,7 +598,7 @@ func TestInventoryCacheRateLimiting(t *testing.T) {
 		synctest.Wait()
 
 		// After only 100ms, not all instances should be loaded and the cache shouldn't be healthy yet.
-		initialCount := inventoryCache.store.cache.Len()
+		initialCount := inventoryCache.cache.Len()
 		require.Greater(t, initialCount, 0, "expected some instances to be loaded")
 		require.Less(t, initialCount, numInstances,
 			"not all instances should be loaded immediately",
@@ -598,8 +609,8 @@ func TestInventoryCacheRateLimiting(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		synctest.Wait()
 
-		require.Greater(t, inventoryCache.store.cache.Len(), initialCount,
-			"expected more instances to be loaded now than before, but not all", initialCount, inventoryCache.store.cache.Len())
+		require.Greater(t, inventoryCache.cache.Len(), initialCount,
+			"expected more instances to be loaded now than before, but not all", initialCount, inventoryCache.cache.Len())
 		require.Less(t, initialCount, numInstances,
 			"not all instances should be loaded yet",
 			numInstances, initialCount)
@@ -610,7 +621,7 @@ func TestInventoryCacheRateLimiting(t *testing.T) {
 
 		// After 2 seconds, all instances should be loaded and the cache should be healthy.
 		require.True(t, inventoryCache.IsHealthy())
-		finalCount := inventoryCache.store.cache.Len()
+		finalCount := inventoryCache.cache.Len()
 		require.Equal(t, numInstances, finalCount,
 			"expected all %d instances to be loaded, got %d", numInstances, finalCount)
 	})

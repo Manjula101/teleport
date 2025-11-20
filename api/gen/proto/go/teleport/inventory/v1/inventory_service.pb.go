@@ -39,7 +39,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// InstanceType represents the type of instance.
+type InstanceType int32
+
+const (
+	InstanceType_INSTANCE_TYPE_UNSPECIFIED InstanceType = 0
+	// INSTANCE_TYPE_INSTANCE is a Teleport instance.
+	InstanceType_INSTANCE_TYPE_INSTANCE InstanceType = 1
+	// INSTANCE_TYPE_BOT_INSTANCE is a bot instance.
+	InstanceType_INSTANCE_TYPE_BOT_INSTANCE InstanceType = 2
+)
+
+// Enum value maps for InstanceType.
+var (
+	InstanceType_name = map[int32]string{
+		0: "INSTANCE_TYPE_UNSPECIFIED",
+		1: "INSTANCE_TYPE_INSTANCE",
+		2: "INSTANCE_TYPE_BOT_INSTANCE",
+	}
+	InstanceType_value = map[string]int32{
+		"INSTANCE_TYPE_UNSPECIFIED":  0,
+		"INSTANCE_TYPE_INSTANCE":     1,
+		"INSTANCE_TYPE_BOT_INSTANCE": 2,
+	}
+)
+
+func (x InstanceType) Enum() *InstanceType {
+	p := new(InstanceType)
+	*p = x
+	return p
+}
+
+func (x InstanceType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (InstanceType) Descriptor() protoreflect.EnumDescriptor {
+	return file_teleport_inventory_v1_inventory_service_proto_enumTypes[0].Descriptor()
+}
+
+func (InstanceType) Type() protoreflect.EnumType {
+	return &file_teleport_inventory_v1_inventory_service_proto_enumTypes[0]
+}
+
+func (x InstanceType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use InstanceType.Descriptor instead.
+func (InstanceType) EnumDescriptor() ([]byte, []int) {
+	return file_teleport_inventory_v1_inventory_service_proto_rawDescGZIP(), []int{0}
+}
+
 // UnifiedInstanceSort specifies the sort mode for listing unified instances.
+// If a sorting criteria for multiple instances are equal (eg. 2 instances are the same version), the secondary
+// sorting will always be by name.
 type UnifiedInstanceSort int32
 
 const (
@@ -79,11 +133,11 @@ func (x UnifiedInstanceSort) String() string {
 }
 
 func (UnifiedInstanceSort) Descriptor() protoreflect.EnumDescriptor {
-	return file_teleport_inventory_v1_inventory_service_proto_enumTypes[0].Descriptor()
+	return file_teleport_inventory_v1_inventory_service_proto_enumTypes[1].Descriptor()
 }
 
 func (UnifiedInstanceSort) Type() protoreflect.EnumType {
-	return &file_teleport_inventory_v1_inventory_service_proto_enumTypes[0]
+	return &file_teleport_inventory_v1_inventory_service_proto_enumTypes[1]
 }
 
 func (x UnifiedInstanceSort) Number() protoreflect.EnumNumber {
@@ -92,7 +146,7 @@ func (x UnifiedInstanceSort) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use UnifiedInstanceSort.Descriptor instead.
 func (UnifiedInstanceSort) EnumDescriptor() ([]byte, []int) {
-	return file_teleport_inventory_v1_inventory_service_proto_rawDescGZIP(), []int{0}
+	return file_teleport_inventory_v1_inventory_service_proto_rawDescGZIP(), []int{1}
 }
 
 // SortOrder specifies the sort order for listing unified instances.
@@ -131,11 +185,11 @@ func (x SortOrder) String() string {
 }
 
 func (SortOrder) Descriptor() protoreflect.EnumDescriptor {
-	return file_teleport_inventory_v1_inventory_service_proto_enumTypes[1].Descriptor()
+	return file_teleport_inventory_v1_inventory_service_proto_enumTypes[2].Descriptor()
 }
 
 func (SortOrder) Type() protoreflect.EnumType {
-	return &file_teleport_inventory_v1_inventory_service_proto_enumTypes[1]
+	return &file_teleport_inventory_v1_inventory_service_proto_enumTypes[2]
 }
 
 func (x SortOrder) Number() protoreflect.EnumNumber {
@@ -144,7 +198,7 @@ func (x SortOrder) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SortOrder.Descriptor instead.
 func (SortOrder) EnumDescriptor() ([]byte, []int) {
-	return file_teleport_inventory_v1_inventory_service_proto_rawDescGZIP(), []int{1}
+	return file_teleport_inventory_v1_inventory_service_proto_rawDescGZIP(), []int{2}
 }
 
 // ListUnifiedInstancesRequest is the request for listing instances.
@@ -292,9 +346,9 @@ type ListUnifiedInstancesFilter struct {
 	// search_keywords is a list of search keywords using predicate language to match against resource field values.
 	SearchKeywords string `protobuf:"bytes,2,opt,name=search_keywords,json=searchKeywords,proto3" json:"search_keywords,omitempty"`
 	// instance_types is the types of instances to return. If omitted, both instances and bot instances will be returned.
-	InstanceTypes []string `protobuf:"bytes,3,rep,name=instance_types,json=instanceTypes,proto3" json:"instance_types,omitempty"`
+	InstanceTypes []InstanceType `protobuf:"varint,3,rep,packed,name=instance_types,json=instanceTypes,proto3,enum=teleport.inventory.v1.InstanceType" json:"instance_types,omitempty"`
 	// services is the list of services (system roles) to filter instances by. An instance must have one or more of the services here to be returned.
-	// Bot instances are not filterable by services with this API.
+	// The services filter is ignored for bot instances.
 	Services []string `protobuf:"bytes,4,rep,name=services,proto3" json:"services,omitempty"`
 	// updater_groups is the list of updater groups to filter instances by.
 	UpdaterGroups []string `protobuf:"bytes,5,rep,name=updater_groups,json=updaterGroups,proto3" json:"updater_groups,omitempty"`
@@ -348,7 +402,7 @@ func (x *ListUnifiedInstancesFilter) GetSearchKeywords() string {
 	return ""
 }
 
-func (x *ListUnifiedInstancesFilter) GetInstanceTypes() []string {
+func (x *ListUnifiedInstancesFilter) GetInstanceTypes() []InstanceType {
 	if x != nil {
 		return x.InstanceTypes
 	}
@@ -475,18 +529,22 @@ const file_teleport_inventory_v1_inventory_service_proto_rawDesc = "" +
 	"\x05order\x18\x05 \x01(\x0e2 .teleport.inventory.v1.SortOrderR\x05order\"\x88\x01\n" +
 	"\x1cListUnifiedInstancesResponse\x12@\n" +
 	"\x05items\x18\x01 \x03(\v2*.teleport.inventory.v1.UnifiedInstanceItemR\x05items\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xe5\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x8a\x02\n" +
 	"\x1aListUnifiedInstancesFilter\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\x12'\n" +
-	"\x0fsearch_keywords\x18\x02 \x01(\tR\x0esearchKeywords\x12%\n" +
-	"\x0einstance_types\x18\x03 \x03(\tR\rinstanceTypes\x12\x1a\n" +
+	"\x0fsearch_keywords\x18\x02 \x01(\tR\x0esearchKeywords\x12J\n" +
+	"\x0einstance_types\x18\x03 \x03(\x0e2#.teleport.inventory.v1.InstanceTypeR\rinstanceTypes\x12\x1a\n" +
 	"\bservices\x18\x04 \x03(\tR\bservices\x12%\n" +
 	"\x0eupdater_groups\x18\x05 \x03(\tR\rupdaterGroups\x12\x1c\n" +
 	"\tupgraders\x18\x06 \x03(\tR\tupgraders\"\x97\x01\n" +
 	"\x13UnifiedInstanceItem\x12/\n" +
 	"\binstance\x18\x01 \x01(\v2\x11.types.InstanceV1H\x00R\binstance\x12G\n" +
 	"\fbot_instance\x18\x02 \x01(\v2\".teleport.machineid.v1.BotInstanceH\x00R\vbotInstanceB\x06\n" +
-	"\x04item*\x9f\x01\n" +
+	"\x04item*i\n" +
+	"\fInstanceType\x12\x1d\n" +
+	"\x19INSTANCE_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16INSTANCE_TYPE_INSTANCE\x10\x01\x12\x1e\n" +
+	"\x1aINSTANCE_TYPE_BOT_INSTANCE\x10\x02*\x9f\x01\n" +
 	"\x13UnifiedInstanceSort\x12%\n" +
 	"!UNIFIED_INSTANCE_SORT_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aUNIFIED_INSTANCE_SORT_NAME\x10\x01\x12\x1e\n" +
@@ -495,9 +553,7 @@ const file_teleport_inventory_v1_inventory_service_proto_rawDesc = "" +
 	"\tSortOrder\x12\x1a\n" +
 	"\x16SORT_ORDER_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14SORT_ORDER_ASCENDING\x10\x01\x12\x19\n" +
-	"\x15SORT_ORDER_DESCENDING\x10\x022\x93\x01\n" +
-	"\x10InventoryService\x12\x7f\n" +
-	"\x14ListUnifiedInstances\x122.teleport.inventory.v1.ListUnifiedInstancesRequest\x1a3.teleport.inventory.v1.ListUnifiedInstancesResponseBVZTgithub.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1;inventoryv1b\x06proto3"
+	"\x15SORT_ORDER_DESCENDING\x10\x02BVZTgithub.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1;inventoryv1b\x06proto3"
 
 var (
 	file_teleport_inventory_v1_inventory_service_proto_rawDescOnce sync.Once
@@ -511,32 +567,32 @@ func file_teleport_inventory_v1_inventory_service_proto_rawDescGZIP() []byte {
 	return file_teleport_inventory_v1_inventory_service_proto_rawDescData
 }
 
-var file_teleport_inventory_v1_inventory_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_teleport_inventory_v1_inventory_service_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_teleport_inventory_v1_inventory_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_teleport_inventory_v1_inventory_service_proto_goTypes = []any{
-	(UnifiedInstanceSort)(0),             // 0: teleport.inventory.v1.UnifiedInstanceSort
-	(SortOrder)(0),                       // 1: teleport.inventory.v1.SortOrder
-	(*ListUnifiedInstancesRequest)(nil),  // 2: teleport.inventory.v1.ListUnifiedInstancesRequest
-	(*ListUnifiedInstancesResponse)(nil), // 3: teleport.inventory.v1.ListUnifiedInstancesResponse
-	(*ListUnifiedInstancesFilter)(nil),   // 4: teleport.inventory.v1.ListUnifiedInstancesFilter
-	(*UnifiedInstanceItem)(nil),          // 5: teleport.inventory.v1.UnifiedInstanceItem
-	(*types.InstanceV1)(nil),             // 6: types.InstanceV1
-	(*v1.BotInstance)(nil),               // 7: teleport.machineid.v1.BotInstance
+	(InstanceType)(0),                    // 0: teleport.inventory.v1.InstanceType
+	(UnifiedInstanceSort)(0),             // 1: teleport.inventory.v1.UnifiedInstanceSort
+	(SortOrder)(0),                       // 2: teleport.inventory.v1.SortOrder
+	(*ListUnifiedInstancesRequest)(nil),  // 3: teleport.inventory.v1.ListUnifiedInstancesRequest
+	(*ListUnifiedInstancesResponse)(nil), // 4: teleport.inventory.v1.ListUnifiedInstancesResponse
+	(*ListUnifiedInstancesFilter)(nil),   // 5: teleport.inventory.v1.ListUnifiedInstancesFilter
+	(*UnifiedInstanceItem)(nil),          // 6: teleport.inventory.v1.UnifiedInstanceItem
+	(*types.InstanceV1)(nil),             // 7: types.InstanceV1
+	(*v1.BotInstance)(nil),               // 8: teleport.machineid.v1.BotInstance
 }
 var file_teleport_inventory_v1_inventory_service_proto_depIdxs = []int32{
-	4, // 0: teleport.inventory.v1.ListUnifiedInstancesRequest.filter:type_name -> teleport.inventory.v1.ListUnifiedInstancesFilter
-	0, // 1: teleport.inventory.v1.ListUnifiedInstancesRequest.sort:type_name -> teleport.inventory.v1.UnifiedInstanceSort
-	1, // 2: teleport.inventory.v1.ListUnifiedInstancesRequest.order:type_name -> teleport.inventory.v1.SortOrder
-	5, // 3: teleport.inventory.v1.ListUnifiedInstancesResponse.items:type_name -> teleport.inventory.v1.UnifiedInstanceItem
-	6, // 4: teleport.inventory.v1.UnifiedInstanceItem.instance:type_name -> types.InstanceV1
-	7, // 5: teleport.inventory.v1.UnifiedInstanceItem.bot_instance:type_name -> teleport.machineid.v1.BotInstance
-	2, // 6: teleport.inventory.v1.InventoryService.ListUnifiedInstances:input_type -> teleport.inventory.v1.ListUnifiedInstancesRequest
-	3, // 7: teleport.inventory.v1.InventoryService.ListUnifiedInstances:output_type -> teleport.inventory.v1.ListUnifiedInstancesResponse
-	7, // [7:8] is the sub-list for method output_type
-	6, // [6:7] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	5, // 0: teleport.inventory.v1.ListUnifiedInstancesRequest.filter:type_name -> teleport.inventory.v1.ListUnifiedInstancesFilter
+	1, // 1: teleport.inventory.v1.ListUnifiedInstancesRequest.sort:type_name -> teleport.inventory.v1.UnifiedInstanceSort
+	2, // 2: teleport.inventory.v1.ListUnifiedInstancesRequest.order:type_name -> teleport.inventory.v1.SortOrder
+	6, // 3: teleport.inventory.v1.ListUnifiedInstancesResponse.items:type_name -> teleport.inventory.v1.UnifiedInstanceItem
+	0, // 4: teleport.inventory.v1.ListUnifiedInstancesFilter.instance_types:type_name -> teleport.inventory.v1.InstanceType
+	7, // 5: teleport.inventory.v1.UnifiedInstanceItem.instance:type_name -> types.InstanceV1
+	8, // 6: teleport.inventory.v1.UnifiedInstanceItem.bot_instance:type_name -> teleport.machineid.v1.BotInstance
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_teleport_inventory_v1_inventory_service_proto_init() }
@@ -553,10 +609,10 @@ func file_teleport_inventory_v1_inventory_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_teleport_inventory_v1_inventory_service_proto_rawDesc), len(file_teleport_inventory_v1_inventory_service_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   4,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   0,
 		},
 		GoTypes:           file_teleport_inventory_v1_inventory_service_proto_goTypes,
 		DependencyIndexes: file_teleport_inventory_v1_inventory_service_proto_depIdxs,

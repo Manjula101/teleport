@@ -1833,20 +1833,27 @@ func buildListResourcesResponse[T types.ResourceWithLabels](resources iter.Seq[T
 	return &resp, nil
 }
 
-// GetCacheSize returns the combined total number of nodes, apps, dbs, kubes, desktops, and bot instances.
-func (c *Cache) GetCacheSize() int {
+// GetResourceCount returns the combined total number of nodes, app servers, database servers, kube servers, desktops, and bot instances.
+func (c *Cache) GetResourceCount() int {
+	c.rw.RLock()
+	defer c.rw.RUnlock()
+
+	if !c.ok {
+		return -1
+	}
+
 	count := 0
 	if c.collections.nodes != nil {
 		count += c.collections.nodes.store.len()
 	}
-	if c.collections.apps != nil {
-		count += c.collections.apps.store.len()
+	if c.collections.appServers != nil {
+		count += c.collections.appServers.store.len()
 	}
-	if c.collections.dbs != nil {
-		count += c.collections.dbs.store.len()
+	if c.collections.dbServers != nil {
+		count += c.collections.dbServers.store.len()
 	}
-	if c.collections.kubeClusters != nil {
-		count += c.collections.kubeClusters.store.len()
+	if c.collections.kubeServers != nil {
+		count += c.collections.kubeServers.store.len()
 	}
 	if c.collections.windowsDesktops != nil {
 		count += c.collections.windowsDesktops.store.len()

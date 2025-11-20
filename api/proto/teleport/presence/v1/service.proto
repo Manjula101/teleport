@@ -18,6 +18,7 @@ package teleport.presence.v1;
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/field_mask.proto";
+import "teleport/inventory/v1/inventory_service.proto";
 import "teleport/legacy/types/types.proto";
 import "teleport/presence/v1/relay_server.proto";
 
@@ -47,6 +48,10 @@ service PresenceService {
   rpc ListRelayServers(ListRelayServersRequest) returns (ListRelayServersResponse);
   // DeleteRelayServer deletes a relay_server resource by name.
   rpc DeleteRelayServer(DeleteRelayServerRequest) returns (DeleteRelayServerResponse);
+
+  // ListUnifiedInstances returns a page of teleport instances and bot_instances from the inventory cache.
+  // This API will refuse any requests when the inventory cache is unhealthy or not yet fully initialized.
+  rpc ListUnifiedInstances(teleport.inventory.v1.ListUnifiedInstancesRequest) returns (teleport.inventory.v1.ListUnifiedInstancesResponse);
 }
 
 // Request for GetRemoteCluster

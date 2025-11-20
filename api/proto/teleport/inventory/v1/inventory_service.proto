@@ -23,14 +23,18 @@ import "teleport/machineid/v1/bot_instance.proto";
 
 option go_package = "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1;inventoryv1";
 
-// InventoryService provides methods to list instances from the inventory cache. This service does not fallback to the backend if the cache is unhealthy.
-service InventoryService {
-  // ListUnifiedInstances returns a page of teleport instances and bot_instances. This API will refuse any requests when the cache is unhealthy or not yet
-  // fully initialized.
-  rpc ListUnifiedInstances(ListUnifiedInstancesRequest) returns (ListUnifiedInstancesResponse);
+// InstanceType represents the type of instance.
+enum InstanceType {
+  INSTANCE_TYPE_UNSPECIFIED = 0;
+  // INSTANCE_TYPE_INSTANCE is a Teleport instance.
+  INSTANCE_TYPE_INSTANCE = 1;
+  // INSTANCE_TYPE_BOT_INSTANCE is a bot instance.
+  INSTANCE_TYPE_BOT_INSTANCE = 2;
 }
 
 // UnifiedInstanceSort specifies the sort mode for listing unified instances.
+// If a sorting criteria for multiple instances are equal (eg. 2 instances are the same version), the secondary
+// sorting will always be by name.
 enum UnifiedInstanceSort {
   UNIFIED_INSTANCE_SORT_UNSPECIFIED = 0;
   // UNIFIED_INSTANCE_SORT_NAME sorts by display name (hostname for instances, bot name for bot instances).
@@ -79,9 +83,9 @@ message ListUnifiedInstancesFilter {
   // search_keywords is a list of search keywords using predicate language to match against resource field values.
   string search_keywords = 2;
   // instance_types is the types of instances to return. If omitted, both instances and bot instances will be returned.
-  repeated string instance_types = 3;
+  repeated InstanceType instance_types = 3;
   // services is the list of services (system roles) to filter instances by. An instance must have one or more of the services here to be returned.
-  // Bot instances are not filterable by services with this API.
+  // The services filter is ignored for bot instances.
   repeated string services = 4;
   // updater_groups is the list of updater groups to filter instances by.
   repeated string updater_groups = 5;

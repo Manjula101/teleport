@@ -21,6 +21,7 @@
 package presencev1
 
 import (
+	v1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
 	types "github.com/gravitational/teleport/api/types"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -792,7 +793,7 @@ var File_teleport_presence_v1_service_proto protoreflect.FileDescriptor
 
 const file_teleport_presence_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\"teleport/presence/v1/service.proto\x12\x14teleport.presence.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a!teleport/legacy/types/types.proto\x1a'teleport/presence/v1/relay_server.proto\"-\n" +
+	"\"teleport/presence/v1/service.proto\x12\x14teleport.presence.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a-teleport/inventory/v1/inventory_service.proto\x1a!teleport/legacy/types/types.proto\x1a'teleport/presence/v1/relay_server.proto\"-\n" +
 	"\x17GetRemoteClusterRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"W\n" +
 	"\x19ListRemoteClustersRequest\x12\x1b\n" +
@@ -832,7 +833,7 @@ const file_teleport_presence_v1_service_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\".\n" +
 	"\x18DeleteRelayServerRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x1b\n" +
-	"\x19DeleteRelayServerResponse2\xb8\b\n" +
+	"\x19DeleteRelayServerResponse2\xb9\t\n" +
 	"\x0fPresenceService\x12Y\n" +
 	"\x10GetRemoteCluster\x12-.teleport.presence.v1.GetRemoteClusterRequest\x1a\x16.types.RemoteClusterV3\x12w\n" +
 	"\x12ListRemoteClusters\x12/.teleport.presence.v1.ListRemoteClustersRequest\x1a0.teleport.presence.v1.ListRemoteClustersResponse\x12_\n" +
@@ -843,7 +844,8 @@ const file_teleport_presence_v1_service_proto_rawDesc = "" +
 	"\x13DeleteReverseTunnel\x120.teleport.presence.v1.DeleteReverseTunnelRequest\x1a\x16.google.protobuf.Empty\x12k\n" +
 	"\x0eGetRelayServer\x12+.teleport.presence.v1.GetRelayServerRequest\x1a,.teleport.presence.v1.GetRelayServerResponse\x12q\n" +
 	"\x10ListRelayServers\x12-.teleport.presence.v1.ListRelayServersRequest\x1a..teleport.presence.v1.ListRelayServersResponse\x12t\n" +
-	"\x11DeleteRelayServer\x12..teleport.presence.v1.DeleteRelayServerRequest\x1a/.teleport.presence.v1.DeleteRelayServerResponseBTZRgithub.com/gravitational/teleport/api/gen/proto/go/teleport/presence/v1;presencev1b\x06proto3"
+	"\x11DeleteRelayServer\x12..teleport.presence.v1.DeleteRelayServerRequest\x1a/.teleport.presence.v1.DeleteRelayServerResponse\x12\x7f\n" +
+	"\x14ListUnifiedInstances\x122.teleport.inventory.v1.ListUnifiedInstancesRequest\x1a3.teleport.inventory.v1.ListUnifiedInstancesResponseBTZRgithub.com/gravitational/teleport/api/gen/proto/go/teleport/presence/v1;presencev1b\x06proto3"
 
 var (
 	file_teleport_presence_v1_service_proto_rawDescOnce sync.Once
@@ -859,26 +861,28 @@ func file_teleport_presence_v1_service_proto_rawDescGZIP() []byte {
 
 var file_teleport_presence_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_teleport_presence_v1_service_proto_goTypes = []any{
-	(*GetRemoteClusterRequest)(nil),    // 0: teleport.presence.v1.GetRemoteClusterRequest
-	(*ListRemoteClustersRequest)(nil),  // 1: teleport.presence.v1.ListRemoteClustersRequest
-	(*ListRemoteClustersResponse)(nil), // 2: teleport.presence.v1.ListRemoteClustersResponse
-	(*UpdateRemoteClusterRequest)(nil), // 3: teleport.presence.v1.UpdateRemoteClusterRequest
-	(*DeleteRemoteClusterRequest)(nil), // 4: teleport.presence.v1.DeleteRemoteClusterRequest
-	(*ListReverseTunnelsRequest)(nil),  // 5: teleport.presence.v1.ListReverseTunnelsRequest
-	(*ListReverseTunnelsResponse)(nil), // 6: teleport.presence.v1.ListReverseTunnelsResponse
-	(*UpsertReverseTunnelRequest)(nil), // 7: teleport.presence.v1.UpsertReverseTunnelRequest
-	(*DeleteReverseTunnelRequest)(nil), // 8: teleport.presence.v1.DeleteReverseTunnelRequest
-	(*GetRelayServerRequest)(nil),      // 9: teleport.presence.v1.GetRelayServerRequest
-	(*GetRelayServerResponse)(nil),     // 10: teleport.presence.v1.GetRelayServerResponse
-	(*ListRelayServersRequest)(nil),    // 11: teleport.presence.v1.ListRelayServersRequest
-	(*ListRelayServersResponse)(nil),   // 12: teleport.presence.v1.ListRelayServersResponse
-	(*DeleteRelayServerRequest)(nil),   // 13: teleport.presence.v1.DeleteRelayServerRequest
-	(*DeleteRelayServerResponse)(nil),  // 14: teleport.presence.v1.DeleteRelayServerResponse
-	(*types.RemoteClusterV3)(nil),      // 15: types.RemoteClusterV3
-	(*fieldmaskpb.FieldMask)(nil),      // 16: google.protobuf.FieldMask
-	(*types.ReverseTunnelV2)(nil),      // 17: types.ReverseTunnelV2
-	(*RelayServer)(nil),                // 18: teleport.presence.v1.RelayServer
-	(*emptypb.Empty)(nil),              // 19: google.protobuf.Empty
+	(*GetRemoteClusterRequest)(nil),         // 0: teleport.presence.v1.GetRemoteClusterRequest
+	(*ListRemoteClustersRequest)(nil),       // 1: teleport.presence.v1.ListRemoteClustersRequest
+	(*ListRemoteClustersResponse)(nil),      // 2: teleport.presence.v1.ListRemoteClustersResponse
+	(*UpdateRemoteClusterRequest)(nil),      // 3: teleport.presence.v1.UpdateRemoteClusterRequest
+	(*DeleteRemoteClusterRequest)(nil),      // 4: teleport.presence.v1.DeleteRemoteClusterRequest
+	(*ListReverseTunnelsRequest)(nil),       // 5: teleport.presence.v1.ListReverseTunnelsRequest
+	(*ListReverseTunnelsResponse)(nil),      // 6: teleport.presence.v1.ListReverseTunnelsResponse
+	(*UpsertReverseTunnelRequest)(nil),      // 7: teleport.presence.v1.UpsertReverseTunnelRequest
+	(*DeleteReverseTunnelRequest)(nil),      // 8: teleport.presence.v1.DeleteReverseTunnelRequest
+	(*GetRelayServerRequest)(nil),           // 9: teleport.presence.v1.GetRelayServerRequest
+	(*GetRelayServerResponse)(nil),          // 10: teleport.presence.v1.GetRelayServerResponse
+	(*ListRelayServersRequest)(nil),         // 11: teleport.presence.v1.ListRelayServersRequest
+	(*ListRelayServersResponse)(nil),        // 12: teleport.presence.v1.ListRelayServersResponse
+	(*DeleteRelayServerRequest)(nil),        // 13: teleport.presence.v1.DeleteRelayServerRequest
+	(*DeleteRelayServerResponse)(nil),       // 14: teleport.presence.v1.DeleteRelayServerResponse
+	(*types.RemoteClusterV3)(nil),           // 15: types.RemoteClusterV3
+	(*fieldmaskpb.FieldMask)(nil),           // 16: google.protobuf.FieldMask
+	(*types.ReverseTunnelV2)(nil),           // 17: types.ReverseTunnelV2
+	(*RelayServer)(nil),                     // 18: teleport.presence.v1.RelayServer
+	(*v1.ListUnifiedInstancesRequest)(nil),  // 19: teleport.inventory.v1.ListUnifiedInstancesRequest
+	(*emptypb.Empty)(nil),                   // 20: google.protobuf.Empty
+	(*v1.ListUnifiedInstancesResponse)(nil), // 21: teleport.inventory.v1.ListUnifiedInstancesResponse
 }
 var file_teleport_presence_v1_service_proto_depIdxs = []int32{
 	15, // 0: teleport.presence.v1.ListRemoteClustersResponse.remote_clusters:type_name -> types.RemoteClusterV3
@@ -898,18 +902,20 @@ var file_teleport_presence_v1_service_proto_depIdxs = []int32{
 	9,  // 14: teleport.presence.v1.PresenceService.GetRelayServer:input_type -> teleport.presence.v1.GetRelayServerRequest
 	11, // 15: teleport.presence.v1.PresenceService.ListRelayServers:input_type -> teleport.presence.v1.ListRelayServersRequest
 	13, // 16: teleport.presence.v1.PresenceService.DeleteRelayServer:input_type -> teleport.presence.v1.DeleteRelayServerRequest
-	15, // 17: teleport.presence.v1.PresenceService.GetRemoteCluster:output_type -> types.RemoteClusterV3
-	2,  // 18: teleport.presence.v1.PresenceService.ListRemoteClusters:output_type -> teleport.presence.v1.ListRemoteClustersResponse
-	15, // 19: teleport.presence.v1.PresenceService.UpdateRemoteCluster:output_type -> types.RemoteClusterV3
-	19, // 20: teleport.presence.v1.PresenceService.DeleteRemoteCluster:output_type -> google.protobuf.Empty
-	6,  // 21: teleport.presence.v1.PresenceService.ListReverseTunnels:output_type -> teleport.presence.v1.ListReverseTunnelsResponse
-	17, // 22: teleport.presence.v1.PresenceService.UpsertReverseTunnel:output_type -> types.ReverseTunnelV2
-	19, // 23: teleport.presence.v1.PresenceService.DeleteReverseTunnel:output_type -> google.protobuf.Empty
-	10, // 24: teleport.presence.v1.PresenceService.GetRelayServer:output_type -> teleport.presence.v1.GetRelayServerResponse
-	12, // 25: teleport.presence.v1.PresenceService.ListRelayServers:output_type -> teleport.presence.v1.ListRelayServersResponse
-	14, // 26: teleport.presence.v1.PresenceService.DeleteRelayServer:output_type -> teleport.presence.v1.DeleteRelayServerResponse
-	17, // [17:27] is the sub-list for method output_type
-	7,  // [7:17] is the sub-list for method input_type
+	19, // 17: teleport.presence.v1.PresenceService.ListUnifiedInstances:input_type -> teleport.inventory.v1.ListUnifiedInstancesRequest
+	15, // 18: teleport.presence.v1.PresenceService.GetRemoteCluster:output_type -> types.RemoteClusterV3
+	2,  // 19: teleport.presence.v1.PresenceService.ListRemoteClusters:output_type -> teleport.presence.v1.ListRemoteClustersResponse
+	15, // 20: teleport.presence.v1.PresenceService.UpdateRemoteCluster:output_type -> types.RemoteClusterV3
+	20, // 21: teleport.presence.v1.PresenceService.DeleteRemoteCluster:output_type -> google.protobuf.Empty
+	6,  // 22: teleport.presence.v1.PresenceService.ListReverseTunnels:output_type -> teleport.presence.v1.ListReverseTunnelsResponse
+	17, // 23: teleport.presence.v1.PresenceService.UpsertReverseTunnel:output_type -> types.ReverseTunnelV2
+	20, // 24: teleport.presence.v1.PresenceService.DeleteReverseTunnel:output_type -> google.protobuf.Empty
+	10, // 25: teleport.presence.v1.PresenceService.GetRelayServer:output_type -> teleport.presence.v1.GetRelayServerResponse
+	12, // 26: teleport.presence.v1.PresenceService.ListRelayServers:output_type -> teleport.presence.v1.ListRelayServersResponse
+	14, // 27: teleport.presence.v1.PresenceService.DeleteRelayServer:output_type -> teleport.presence.v1.DeleteRelayServerResponse
+	21, // 28: teleport.presence.v1.PresenceService.ListUnifiedInstances:output_type -> teleport.inventory.v1.ListUnifiedInstancesResponse
+	18, // [18:29] is the sub-list for method output_type
+	7,  // [7:18] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name

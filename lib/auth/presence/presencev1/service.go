@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/gravitational/teleport"
+	inventorypb "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
 	presencepb "github.com/gravitational/teleport/api/gen/proto/go/teleport/presence/v1"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
@@ -56,6 +57,10 @@ type Cache interface {
 	ListRelayServers(ctx context.Context, pageSize int, pageToken string) (_ []*presencepb.RelayServer, nextPageToken string, _ error)
 }
 
+type InventoryCache interface {
+	ListUnifiedInstances(ctx context.Context, req *inventorypb.ListUnifiedInstancesRequest) (*inventorypb.ListUnifiedInstancesResponse, error)
+}
+
 type AuthServer interface {
 	// DeleteRemoteCluster deletes the remote cluster and associated resources
 	// like certificate authorities.
@@ -66,28 +71,30 @@ type AuthServer interface {
 // ServiceConfig holds configuration options for
 // the presence gRPC service.
 type ServiceConfig struct {
-	Authorizer authz.Authorizer
-	AuthServer AuthServer
-	Backend    Backend
-	Cache      Cache
-	Logger     *slog.Logger
-	Emitter    apievents.Emitter
-	Reporter   usagereporter.UsageReporter
-	Clock      clockwork.Clock
+	Authorizer     authz.Authorizer
+	AuthServer     AuthServer
+	Backend        Backend
+	Cache          Cache
+	InventoryCache InventoryCache
+	Logger         *slog.Logger
+	Emitter        apievents.Emitter
+	Reporter       usagereporter.UsageReporter
+	Clock          clockwork.Clock
 }
 
 // Service implements the teleport.presence.v1.PresenceService RPC service.
 type Service struct {
 	presencepb.UnimplementedPresenceServiceServer
 
-	authorizer authz.Authorizer
-	authServer AuthServer
-	backend    Backend
-	cache      Cache
-	logger     *slog.Logger
-	emitter    apievents.Emitter
-	reporter   usagereporter.UsageReporter
-	clock      clockwork.Clock
+	authorizer     authz.Authorizer
+	authServer     AuthServer
+	backend        Backend
+	cache          Cache
+	inventoryCache InventoryCache
+	logger         *slog.Logger
+	emitter        apievents.Emitter
+	reporter       usagereporter.UsageReporter
+	clock          clockwork.Clock
 }
 
 var _ presencepb.PresenceServiceServer = (*Service)(nil)
@@ -117,11 +124,12 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 
 	return &Service{
-		logger:     cfg.Logger,
-		authorizer: cfg.Authorizer,
-		authServer: cfg.AuthServer,
-		backend:    cfg.Backend,
-		cache:      cfg.Cache,
+		logger:         cfg.Logger,
+		authorizer:     cfg.Authorizer,
+		authServer:     cfg.AuthServer,
+		backend:        cfg.Backend,
+		cache:          cfg.Cache,
+		inventoryCache: cfg.InventoryCache,
 
 		emitter:  cfg.Emitter,
 		reporter: cfg.Reporter,
@@ -476,4 +484,45 @@ func (s *Service) DeleteRelayServer(ctx context.Context, req *presencepb.DeleteR
 	}
 
 	return &presencepb.DeleteRelayServerResponse{}, nil
+}
+
+// ListUnifiedInstances returns a page of teleport instances and bot_instances. This API will refuse any requests when the cache is unhealthy or not yet
+// fully initialized.
+func (s *Service) ListUnifiedInstances(
+	ctx context.Context, req *inventorypb.ListUnifiedInstancesRequest,
+) (*inventorypb.ListUnifiedInstancesResponse, error) {
+	authCtx, err := s.authorizer.Authorize(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// If no instance types are specified, default to all instance types
+	instanceTypes := req.GetFilter().GetInstanceTypes()
+	if len(instanceTypes) == 0 {
+		instanceTypes = []inventorypb.InstanceType{
+			inventorypb.InstanceType_INSTANCE_TYPE_INSTANCE,
+			inventorypb.InstanceType_INSTANCE_TYPE_BOT_INSTANCE,
+		}
+	}
+
+	// Ensure that the instance types requested align with the user's permissions
+	for _, instanceType := range instanceTypes {
+		switch instanceType {
+		case inventorypb.InstanceType_INSTANCE_TYPE_INSTANCE:
+			if err := authCtx.CheckAccessToKind(types.KindInstance, types.VerbList, types.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		case inventorypb.InstanceType_INSTANCE_TYPE_BOT_INSTANCE:
+			if err := authCtx.CheckAccessToKind(types.KindBotInstance, types.VerbList, types.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+
+	if s.inventoryCache == nil {
+		return nil, trace.BadParameter("inventory cache is not configured")
+	}
+
+	resp, err := s.inventoryCache.ListUnifiedInstances(ctx, req)
+	return resp, trace.Wrap(err)
 }
