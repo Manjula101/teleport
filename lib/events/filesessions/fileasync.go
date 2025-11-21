@@ -297,7 +297,7 @@ func (u *Uploader) Scan(ctx context.Context) (*ScanStats, error) {
 				continue
 			}
 			if errors.Is(err, errNoEncryptedUploader) {
-				u.log.ErrorContext(ctx, "Skipped encrypted session recording due to missing uploader", "recording", fi.Name(), "error", err)
+				u.log.ErrorContext(ctx, "Skipped encrypted session recording due to missing uploader", "recording", fi.Name())
 				continue
 			}
 			if isSessionError(err) || trace.IsBadParameter(err) {
@@ -460,7 +460,7 @@ func encryptedUploadAggregateIter(in io.Reader, targetSize int, maxSize int) ite
 		// read the file itself should be treated as a corrupted recording
 		yield := func(b []byte, err error) bool {
 			if err != nil {
-				err = sessionError{err}
+				return yieldFn(b, sessionError{err})
 			}
 			return yieldFn(b, err)
 		}
