@@ -37,10 +37,10 @@ import (
 	machineidv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/machineid/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils"
-	botexpression "github.com/gravitational/teleport/lib/auth/machineid/machineidv1/expression"
 	"github.com/gravitational/teleport/lib/cache"
 	"github.com/gravitational/teleport/lib/expression"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/utils/set"
 	"github.com/gravitational/teleport/lib/utils/sortcache"
 	"github.com/gravitational/teleport/lib/utils/typical"
 )
@@ -547,6 +547,36 @@ func (ic *InventoryCache) processDeleteEvent(event types.Event) error {
 	return nil
 }
 
+// parsedFilter holds the expression filters.
+type parsedFilter struct {
+	filter                    *inventoryv1.ListUnifiedInstancesFilter
+	unifiedInstanceExpression typical.Expression[*unifiedFilterEnvironment, bool]
+}
+
+// parseFilter returns a parsedFilter given a ListUnifiedInstancesFilter.
+func (ic *InventoryCache) parseFilter(filter *inventoryv1.ListUnifiedInstancesFilter) (*parsedFilter, error) {
+	pf := &parsedFilter{
+		filter: filter,
+	}
+
+	if filter == nil || filter.SearchKeywords == "" {
+		return pf, nil
+	}
+
+	parser, err := newUnifiedExpressionParser()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	expr, err := parser.Parse(filter.SearchKeywords)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	pf.unifiedInstanceExpression = expr
+
+	return pf, nil
+}
+
 // ListUnifiedInstances returns a page of instances and bot_instances. This API will refuse any requests when the cache is unhealthy or not yet
 // fully initialized.
 func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *inventoryv1.ListUnifiedInstancesRequest) (*inventoryv1.ListUnifiedInstancesResponse, error) {
@@ -568,6 +598,11 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 		startKey = string(decoded)
 	}
 
+	parsed, err := ic.parseFilter(req.GetFilter())
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
 	var items []*inventoryv1.UnifiedInstanceItem
 	var nextPageToken string
 
@@ -585,7 +620,7 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 	}
 
 	for sf := range ic.cache.Ascend(index, startKey, endKey) {
-		if !ic.matchesFilter(sf, req.GetFilter()) {
+		if !ic.matchesFilter(sf, parsed) {
 			continue
 		}
 
@@ -612,10 +647,12 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 }
 
 // matchesFilter checks if a unified instance matches the filter criteria.
-func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, filter *inventoryv1.ListUnifiedInstancesFilter) bool {
-	if filter == nil {
+func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, parsed *parsedFilter) bool {
+	if parsed == nil || parsed.filter == nil {
 		return true
 	}
+
+	filter := parsed.filter
 
 	// Basic search
 	if filter.Search != "" {
@@ -637,14 +674,10 @@ func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, filter *inventory
 
 	// Filter by services (only applies to instances)
 	if len(filter.Services) > 0 && ui.isInstance() {
-		instanceServices := make([]string, len(ui.instance.Spec.Services))
-		for i, svc := range ui.instance.Spec.Services {
-			instanceServices[i] = string(svc)
-		}
-
+		filterServices := set.New(filter.Services...)
 		hasService := false
-		for _, filterService := range filter.Services {
-			if slices.Contains(instanceServices, filterService) {
+		for _, svc := range ui.instance.Spec.Services {
+			if filterServices.Contains(string(svc)) {
 				hasService = true
 				break
 			}
@@ -688,7 +721,7 @@ func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, filter *inventory
 
 	// Filter with predicate language query
 	if filter.SearchKeywords != "" {
-		match, err := ic.matchSearchKeywords(ui, filter.SearchKeywords)
+		match, err := ic.matchSearchKeywords(ui, parsed)
 		if err != nil {
 			ic.cfg.Logger.WarnContext(context.Background(), "Failed to filter instances using predicate expression", "error", err)
 			return false
@@ -702,98 +735,88 @@ func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, filter *inventory
 }
 
 // matchSearchKeywords evaluates predicate language expressions against a unified instance.
-func (ic *InventoryCache) matchSearchKeywords(ui *inventoryInstance, searchKeywords string) (bool, error) {
-	if ui.isInstance() {
-		// For instances, use our instance parser
-		parser, err := newInstanceExpressionParser()
-		if err != nil {
-			return false, trace.Wrap(err)
-		}
-
-		expr, err := parser.Parse(searchKeywords)
-		if err != nil {
-			return false, trace.Wrap(err)
-		}
-
-		env := &instanceEnvironment{
-			instance: ui.instance,
-		}
-
-		match, err := expr.Evaluate(env)
-		if err != nil {
-			return false, trace.Wrap(err)
-		}
-
-		return match, nil
-	} else {
-		// For bot instances, use the existing bot instance expression parser
-		parser, err := botexpression.NewBotInstanceExpressionParser()
-		if err != nil {
-			return false, trace.Wrap(err)
-		}
-
-		expr, err := parser.Parse(searchKeywords)
-		if err != nil {
-			return false, trace.Wrap(err)
-		}
-
-		var latestHeartbeat *machineidv1.BotInstanceStatusHeartbeat
-		if ui.bot.Status != nil && len(ui.bot.Status.LatestHeartbeats) > 0 {
-			latestHeartbeat = ui.bot.Status.LatestHeartbeats[0]
-		}
-
-		var latestAuth *machineidv1.BotInstanceStatusAuthentication
-		if ui.bot.Status != nil && len(ui.bot.Status.LatestAuthentications) > 0 {
-			latestAuth = ui.bot.Status.LatestAuthentications[0]
-		}
-
-		env := &botexpression.Environment{
-			Metadata:             ui.bot.Metadata,
-			Spec:                 ui.bot.Spec,
-			LatestHeartbeat:      latestHeartbeat,
-			LatestAuthentication: latestAuth,
-		}
-
-		match, err := expr.Evaluate(env)
-		if err != nil {
-			return false, trace.Wrap(err)
-		}
-
-		return match, nil
+func (ic *InventoryCache) matchSearchKeywords(ui *inventoryInstance, parsed *parsedFilter) (bool, error) {
+	if parsed.unifiedInstanceExpression == nil {
+		return true, nil
 	}
+
+	env := &unifiedFilterEnvironment{
+		ui: ui,
+	}
+
+	match, err := parsed.unifiedInstanceExpression.Evaluate(env)
+	if err != nil {
+		return false, trace.Wrap(err)
+	}
+
+	return match, nil
 }
 
-// instanceEnvironment is the environment in which expressions for instances will be evaluated
-type instanceEnvironment struct {
-	instance *types.InstanceV1
+// unifiedFilterEnvironment is the filter environment for evaluating expressions on both instances and bot instances.
+type unifiedFilterEnvironment struct {
+	ui *inventoryInstance
 }
 
-func (e *instanceEnvironment) GetVersion() string {
-	if e == nil || e.instance == nil {
+func (e *unifiedFilterEnvironment) GetVersion() string {
+	if e == nil || e.ui == nil {
 		return ""
 	}
-	return e.instance.Spec.Version
+	if e.ui.isInstance() {
+		return e.ui.instance.Spec.Version
+	}
+	// For bot instances, get version from latest heartbeat
+	if e.ui.bot.Status != nil && len(e.ui.bot.Status.LatestHeartbeats) > 0 {
+		return e.ui.bot.Status.LatestHeartbeats[0].Version
+	}
+	return ""
 }
 
-func (e *instanceEnvironment) GetHostname() string {
-	if e == nil || e.instance == nil {
+func (e *unifiedFilterEnvironment) GetHostname() string {
+	if e == nil || e.ui == nil {
 		return ""
 	}
-	return e.instance.Spec.Hostname
+	if e.ui.isInstance() {
+		return e.ui.instance.Spec.Hostname
+	}
+	// For bot instances, get hostname from latest heartbeat
+	if e.ui.bot.Status != nil && len(e.ui.bot.Status.LatestHeartbeats) > 0 {
+		return e.ui.bot.Status.LatestHeartbeats[0].Hostname
+	}
+	return ""
 }
 
-func (e *instanceEnvironment) GetName() string {
-	if e == nil || e.instance == nil {
+func (e *unifiedFilterEnvironment) GetName() string {
+	if e == nil || e.ui == nil {
 		return ""
 	}
-	return e.instance.GetMetadata().Name
+	if e.ui.isInstance() {
+		return e.ui.instance.GetMetadata().Name
+	}
+	return e.ui.bot.GetMetadata().GetName()
 }
 
-func (e *instanceEnvironment) GetServices() []string {
-	if e == nil || e.instance == nil {
+func (e *unifiedFilterEnvironment) GetBotName() string {
+	if e == nil || e.ui == nil || e.ui.isInstance() {
+		return ""
+	}
+	return e.ui.bot.Spec.BotName
+}
+
+func (e *unifiedFilterEnvironment) GetInstanceID() string {
+	if e == nil || e.ui == nil {
+		return ""
+	}
+	if e.ui.isInstance() {
+		return e.ui.instance.GetName()
+	}
+	return e.ui.bot.Spec.InstanceId
+}
+
+func (e *unifiedFilterEnvironment) GetServices() []string {
+	if e == nil || e.ui == nil || !e.ui.isInstance() {
 		return nil
 	}
-	services := e.instance.Spec.Services
+	services := e.ui.instance.Spec.Services
 	result := make([]string, len(services))
 	for i, svc := range services {
 		result[i] = string(svc)
@@ -801,58 +824,97 @@ func (e *instanceEnvironment) GetServices() []string {
 	return result
 }
 
-func (e *instanceEnvironment) GetUpdaterGroup() string {
-	if e == nil || e.instance == nil || e.instance.Spec.UpdaterInfo == nil {
+func (e *unifiedFilterEnvironment) GetUpdaterGroup() string {
+	if e == nil || e.ui == nil {
 		return ""
 	}
-	return e.instance.Spec.UpdaterInfo.UpdateGroup
-}
-
-func (e *instanceEnvironment) GetExternalUpgrader() string {
-	if e == nil || e.instance == nil {
+	if e.ui.isInstance() {
+		if e.ui.instance.Spec.UpdaterInfo != nil {
+			return e.ui.instance.Spec.UpdaterInfo.UpdateGroup
+		}
 		return ""
 	}
-	return e.instance.Spec.ExternalUpgrader
+	// For bot instances, get from latest heartbeat
+	if e.ui.bot.Status != nil && len(e.ui.bot.Status.LatestHeartbeats) > 0 && e.ui.bot.Status.LatestHeartbeats[0].UpdaterInfo != nil {
+		return e.ui.bot.Status.LatestHeartbeats[0].UpdaterInfo.UpdateGroup
+	}
+	return ""
 }
 
-func newInstanceExpressionParser() (*typical.Parser[*instanceEnvironment, bool], error) {
-	spec := expression.DefaultParserSpec[*instanceEnvironment]()
+func (e *unifiedFilterEnvironment) GetExternalUpgrader() string {
+	if e == nil || e.ui == nil {
+		return ""
+	}
+	if e.ui.isInstance() {
+		return e.ui.instance.Spec.ExternalUpgrader
+	}
+	// For bot instances, get from latest heartbeat
+	if e.ui.bot.Status != nil && len(e.ui.bot.Status.LatestHeartbeats) > 0 {
+		return e.ui.bot.Status.LatestHeartbeats[0].ExternalUpdater
+	}
+	return ""
+}
+
+func newUnifiedExpressionParser() (*typical.Parser[*unifiedFilterEnvironment, bool], error) {
+	spec := expression.DefaultParserSpec[*unifiedFilterEnvironment]()
 
 	if spec.Variables == nil {
 		spec.Variables = make(map[string]typical.Variable)
 	}
 
-	// Make the version alias consistent with that of bot instances, this way one query expression can filter both by version.
-	spec.Variables["status.latest_heartbeat.version"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+	spec.Variables["version"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
 		return env.GetVersion(), nil
 	})
-	spec.Variables["hostname"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+	spec.Variables["status.latest_heartbeat.version"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
+		return env.GetVersion(), nil
+	})
+
+	spec.Variables["hostname"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
 		return env.GetHostname(), nil
 	})
-	spec.Variables["spec.hostname"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+	spec.Variables["spec.hostname"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
 		return env.GetHostname(), nil
 	})
-	spec.Variables["name"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+	spec.Variables["status.latest_heartbeat.hostname"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
+		return env.GetHostname(), nil
+	})
+
+	spec.Variables["name"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
 		return env.GetName(), nil
 	})
-	spec.Variables["metadata.name"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+	spec.Variables["metadata.name"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
 		return env.GetName(), nil
 	})
-	spec.Variables["spec.services"] = typical.DynamicVariable(func(env *instanceEnvironment) ([]string, error) {
+
+	spec.Variables["spec.bot_name"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
+		return env.GetBotName(), nil
+	})
+	spec.Variables["spec.instance_id"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
+		return env.GetInstanceID(), nil
+	})
+
+	spec.Variables["spec.services"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) ([]string, error) {
 		return env.GetServices(), nil
 	})
-	spec.Variables["spec.updater_group"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+
+	spec.Variables["spec.updater_group"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
 		return env.GetUpdaterGroup(), nil
 	})
-	spec.Variables["spec.external_upgrader"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+	spec.Variables["status.latest_heartbeat.updater_info.update_group"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
+		return env.GetUpdaterGroup(), nil
+	})
+	spec.Variables["spec.external_upgrader"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
+		return env.GetExternalUpgrader(), nil
+	})
+	spec.Variables["status.latest_heartbeat.external_updater"] = typical.DynamicVariable(func(env *unifiedFilterEnvironment) (string, error) {
 		return env.GetExternalUpgrader(), nil
 	})
 
-	spec.Functions["newer_than"] = typical.BinaryFunction[*instanceEnvironment](botexpression.SemverGt)
-	spec.Functions["older_than"] = typical.BinaryFunction[*instanceEnvironment](botexpression.SemverLt)
-	spec.Functions["between"] = typical.TernaryFunction[*instanceEnvironment](botexpression.SemverBetween)
+	spec.Functions["newer_than"] = typical.BinaryFunction[*unifiedFilterEnvironment](expression.SemverGt)
+	spec.Functions["older_than"] = typical.BinaryFunction[*unifiedFilterEnvironment](expression.SemverLt)
+	spec.Functions["between"] = typical.TernaryFunction[*unifiedFilterEnvironment](expression.SemverBetween)
 
-	return typical.NewParser[*instanceEnvironment, bool](spec)
+	return typical.NewParser[*unifiedFilterEnvironment, bool](spec)
 }
 
 // unifiedInstanceToProto converts a unified instance to a proto UnifiedInstanceItem.
