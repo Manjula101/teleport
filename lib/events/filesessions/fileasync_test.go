@@ -822,87 +822,86 @@ func TestUploadEncryptedRecording(t *testing.T) {
 func TestUploadCorruptEncryptedRecording(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
+		var corruptSessionID string
 		var failedSessionID string
 		wrapUploaderFn := func(uploader events.EncryptedRecordingUploader) events.EncryptedRecordingUploader {
 			return encryptedUploaderFn(func(ctx context.Context, sessionID string, parts iter.Seq2[[]byte, error]) error {
+				if sessionID == corruptSessionID {
+					return sessionError{errors.New("corrupted session")}
+				}
+
 				if sessionID == failedSessionID {
-					return sessionError{errors.New("forced failure")}
+					return errors.New("upload failure")
 				}
 
 				return uploader.UploadEncryptedRecording(ctx, sessionID, parts)
 			})
 		}
+
+		concurrentUploads := 3
+		// we need to generate enough sessions to saturate the concurrent uploads and
+		// ensure we're releasing the semaphore properly
+		sessionCount := concurrentUploads * 3
+
 		p := newUploaderPack(ctx, t, uploaderPackConfig{
 			clock:                              clockwork.NewRealClock(),
 			minimumFileUploadBytes:             64,
 			encrypter:                          &fakeEncryptedIO{},
 			encryptedRecordingUploadTargetSize: 128,
 			wrapEncryptedUploader:              wrapUploaderFn,
+			concurrentUploads:                  concurrentUploads,
 		})
-		synctest.Wait()
 
 		// clean up the scan dir because the tests are flaky otherwise
 		t.Cleanup(func() { os.RemoveAll(p.scanDir) })
 
 		// generate a few recordings
 		eventsCount := 100
-		sessionCount := 5
 		sessionIDs := make([]string, sessionCount)
 		failedIdx := mathrand.IntN(len(sessionIDs))
+		corruptIdx := mathrand.IntN(len(sessionIDs))
+		for corruptIdx == failedIdx {
+			corruptIdx = mathrand.IntN(len(sessionIDs))
+		}
 		for i := range sessionCount {
 			inEvents := eventstest.GenerateTestSession(eventstest.SessionParams{PrintEvents: int64(eventsCount)})
 			sessionIDs[i] = inEvents[0].(events.SessionMetadataGetter).GetSessionID()
 			if i == failedIdx {
 				failedSessionID = sessionIDs[i]
 			}
+			if i == corruptIdx {
+				corruptSessionID = sessionIDs[i]
+			}
 			p.emitEvents(ctx, t, inEvents)
 		}
 
-		// make sure we get the right upload events for the sessions
-		for range len(sessionIDs) {
-			var event events.UploadEvent
-			select {
-			case event = <-p.memEventsC:
-				if event.SessionID != failedSessionID {
-					assert.NoError(t, event.Error)
-				} else {
-					assert.Error(t, event.Error)
-					assert.True(t, isSessionError(event.Error))
-				}
-			case event = <-p.eventsC:
-				if event.SessionID != failedSessionID {
-					assert.NoError(t, event.Error)
-				} else {
-					assert.Error(t, event.Error)
-					assert.True(t, isSessionError(event.Error))
-				}
-			}
+		// Due to issues with determinism in running the uploader, we opt to scan/wait
+		// in a loop to ensure all uploads are fully processed and then assert on the
+		// final state of recording files on disk.
+		for range 10 {
+			_, err := p.uploader.Scan(ctx)
+			require.NoError(t, err)
+			synctest.Wait()
 		}
-		// wait for uploads to be processed
-		synctest.Wait()
 
+		// assert corrupt file is moved to the corrupted dir
+		assert.NoFileExists(t, filepath.Join(p.scanDir, corruptSessionID+tarExt))
+		assert.FileExists(t, filepath.Join(p.uploader.cfg.CorruptedDir, corruptSessionID+tarExt))
+		assert.FileExists(t, filepath.Join(p.uploader.cfg.CorruptedDir, corruptSessionID+errorExt))
+
+		// assert file that failed to upload still exists in the scan dir to be retried
+		assert.FileExists(t, filepath.Join(p.scanDir, failedSessionID+tarExt))
+		assert.NoFileExists(t, filepath.Join(p.uploader.cfg.CorruptedDir, failedSessionID+tarExt))
+
+		// assert that successfully uploaded files are removed
 		for _, sid := range sessionIDs {
-			if sid == failedSessionID {
-				// the failed file should still be present
-				assert.FileExists(t, filepath.Join(p.scanDir, failedSessionID+tarExt))
+			switch sid {
+			case failedSessionID, corruptSessionID:
 				continue
 			}
-			// all other files should have been uploaded and removed from the
-			// scan dir
 			assert.NoFileExists(t, filepath.Join(p.scanDir, sid+tarExt))
+			assert.NoFileExists(t, filepath.Join(p.uploader.cfg.CorruptedDir, sid+tarExt))
 		}
-
-		// wait for uploads to be reprocessed and corrupt recording to move
-		// to corrupted directory
-		stats, err := p.uploader.Scan(ctx)
-		require.NoError(t, err)
-		require.Equal(t, 1, stats.Scanned)
-		require.Equal(t, 1, stats.Corrupted)
-		require.Equal(t, 0, stats.Started)
-		synctest.Wait()
-
-		assert.NoFileExists(t, filepath.Join(p.scanDir, failedSessionID+tarExt))
-		assert.FileExists(t, filepath.Join(p.uploader.cfg.CorruptedDir, failedSessionID+tarExt))
 	})
 }
 
@@ -915,6 +914,7 @@ type uploaderPackConfig struct {
 	encryptedRecordingUploadTargetSize int
 	encryptedRecordingUploadMaxSize    int
 	clock                              clockwork.Clock
+	concurrentUploads                  int
 }
 
 // uploaderPack reduces boilerplate required
@@ -993,6 +993,7 @@ func newUploaderPack(ctx context.Context, t *testing.T, cfg uploaderPackConfig) 
 		EncryptedRecordingUploader:         pack.memUploader,
 		EncryptedRecordingUploadTargetSize: cfg.encryptedRecordingUploadTargetSize,
 		EncryptedRecordingUploadMaxSize:    cfg.encryptedRecordingUploadMaxSize,
+		ConcurrentUploads:                  cfg.concurrentUploads,
 	}
 	if cfg.wrapEncryptedUploader != nil {
 		uploaderCfg.EncryptedRecordingUploader = cfg.wrapEncryptedUploader(pack.memUploader)

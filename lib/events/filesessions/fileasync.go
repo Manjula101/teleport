@@ -661,7 +661,7 @@ func (u *Uploader) uploadEncrypted(ctx context.Context, up *upload) error {
 	u.wg.Go(func() {
 		defer u.releaseSemaphore(ctx)
 		defer up.Close()
-		u.log.DebugContext(ctx, "uploading encrypted recording")
+		log.DebugContext(ctx, "uploading encrypted recording")
 		if err := u.cfg.EncryptedRecordingUploader.UploadEncryptedRecording(ctx, up.sessionID.String(), partIter); err != nil {
 			log.ErrorContext(ctx, "Encrypted upload failed", "error", err)
 			u.emitEvent(events.UploadEvent{
@@ -671,10 +671,12 @@ func (u *Uploader) uploadEncrypted(ctx context.Context, up *upload) error {
 			})
 			return
 		}
+
 		u.emitEvent(events.UploadEvent{
 			SessionID: up.sessionID.String(),
 			Created:   u.cfg.Clock.Now().UTC(),
 		})
+
 		if err := os.Remove(up.file.Name()); err != nil {
 			log.ErrorContext(ctx, "failed to remove session file after successful upload", "error", err)
 		}
