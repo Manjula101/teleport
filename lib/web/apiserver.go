@@ -65,6 +65,7 @@ import (
 	"github.com/gravitational/teleport/api/client/webclient"
 	"github.com/gravitational/teleport/api/constants"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
+	componentfeaturesv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/componentfeatures/v1"
 	mfav1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/mfa/v1"
 	notificationsv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/notifications/v1"
 	summarizerv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/summarizer/v1"
@@ -87,6 +88,7 @@ import (
 	"github.com/gravitational/teleport/lib/client"
 	dbrepl "github.com/gravitational/teleport/lib/client/db/repl"
 	"github.com/gravitational/teleport/lib/client/sso"
+	"github.com/gravitational/teleport/lib/componentfeatures"
 	"github.com/gravitational/teleport/lib/defaults"
 	dtconfig "github.com/gravitational/teleport/lib/devicetrust/config"
 	"github.com/gravitational/teleport/lib/events"
@@ -3452,6 +3454,28 @@ func (h *Handler) clusterUnifiedResourcesGet(w http.ResponseWriter, request *htt
 				proxyDNSName = utils.FindMatchingProxyDNS(request.Host, h.proxyDNSNames())
 			}
 
+			allComponentFeatures := []*componentfeaturesv1.ComponentFeatures{r.GetComponentFeatures()}
+
+			allProxies, err := h.GetAccessPoint().GetProxies()
+			if err != nil {
+				h.logger.ErrorContext(request.Context(), "Failed to get proxy servers to collect ComponentFeatures", "error", err)
+				// If we fail to get proxies & can't be sure about feature support,
+				// appending `nil` ensures any intersection of ComponentFeatures will be empty.
+				allComponentFeatures = append(allComponentFeatures, nil)
+			}
+			for _, srv := range allProxies {
+				allComponentFeatures = append(allComponentFeatures, srv.GetComponentFeatures())
+			}
+
+			allAuthServers, err := h.GetAccessPoint().GetAuthServers()
+			if err != nil {
+				h.logger.ErrorContext(request.Context(), "Failed to get auth servers to collect ComponentFeatures", "error", err)
+				allComponentFeatures = append(allComponentFeatures, nil)
+			}
+			for _, srv := range allAuthServers {
+				allComponentFeatures = append(allComponentFeatures, srv.GetComponentFeatures())
+			}
+
 			app := ui.MakeApp(r.GetApp(), ui.MakeAppsConfig{
 				LocalClusterName:      h.auth.clusterName,
 				LocalProxyDNSName:     proxyDNSName,
@@ -3460,6 +3484,10 @@ func (h *Handler) clusterUnifiedResourcesGet(w http.ResponseWriter, request *htt
 				UserGroupLookup:       getUserGroupLookup(),
 				Logger:                h.logger,
 				RequiresRequest:       enriched.RequiresRequest,
+				SupportsResourceConstraints: componentfeatures.FeatureInAllSets(
+					componentfeaturesv1.ComponentFeatureID_COMPONENT_FEATURE_ID_RESOURCE_CONSTRAINTS_V1,
+					allComponentFeatures...,
+				),
 			})
 			unifiedResources = append(unifiedResources, app)
 		case types.SAMLIdPServiceProvider:
