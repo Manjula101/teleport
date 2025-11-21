@@ -61,68 +61,68 @@ func NewBotInstanceExpressionParser() (*typical.Parser[*Environment, bool], erro
 	}
 
 	// e.g. `newer_than(status.latest_heartbeat.version, "19.0.0")`
-	spec.Functions["newer_than"] = typical.BinaryFunction[*Environment](semverGt)
+	spec.Functions["newer_than"] = typical.BinaryFunction[*Environment](SemverGt)
 	// e.g. `older_than(status.latest_heartbeat.version, "19.0.2")`
-	spec.Functions["older_than"] = typical.BinaryFunction[*Environment](semverLt)
+	spec.Functions["older_than"] = typical.BinaryFunction[*Environment](SemverLt)
 	// e.g. `between(status.latest_heartbeat.version, "19.0.0", "19.0.2")`
-	spec.Functions["between"] = typical.TernaryFunction[*Environment](semverBetween)
+	spec.Functions["between"] = typical.TernaryFunction[*Environment](SemverBetween)
 
 	return typical.NewParser[*Environment, bool](spec)
 }
 
-func semverGt(a, b any) (bool, error) {
-	va, err := toSemver(a)
+func SemverGt(a, b any) (bool, error) {
+	va, err := ToSemver(a)
 	if va == nil || err != nil {
 		return false, err
 	}
-	vb, err := toSemver(b)
+	vb, err := ToSemver(b)
 	if vb == nil || err != nil {
 		return false, err
 	}
 	return va.Compare(*vb) > 0, nil
 }
 
-func semverLt(a, b any) (bool, error) {
-	va, err := toSemver(a)
+func SemverLt(a, b any) (bool, error) {
+	va, err := ToSemver(a)
 	if va == nil || err != nil {
 		return false, err
 	}
-	vb, err := toSemver(b)
+	vb, err := ToSemver(b)
 	if vb == nil || err != nil {
 		return false, err
 	}
 	return va.Compare(*vb) < 0, nil
 }
 
-func semverEq(a, b any) (bool, error) {
-	va, err := toSemver(a)
+func SemverEq(a, b any) (bool, error) {
+	va, err := ToSemver(a)
 	if va == nil || err != nil {
 		return false, err
 	}
-	vb, err := toSemver(b)
+	vb, err := ToSemver(b)
 	if vb == nil || err != nil {
 		return false, err
 	}
 	return va.Compare(*vb) == 0, nil
 }
 
-func semverBetween(c, a, b any) (bool, error) {
-	gt, err := semverGt(c, a)
+func SemverBetween(c, a, b any) (bool, error) {
+	gt, err := SemverGt(c, a)
 	if err != nil {
 		return false, err
 	}
-	eq, err := semverEq(c, a)
+	eq, err := SemverEq(c, a)
 	if err != nil {
 		return false, err
 	}
-	lt, err := semverLt(c, b)
+	lt, err := SemverLt(c, b)
 	if err != nil {
 		return false, err
 	}
 	return (gt || eq) && lt, nil
 }
 
-func toSemver(anyV any) (*semver.Version, error) {
+func ToSemver(anyV any) (*semver.Version, error) {
 	switch v := anyV.(type) {
 	case *semver.Version:
 		return v, nil

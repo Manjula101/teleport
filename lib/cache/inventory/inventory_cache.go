@@ -21,6 +21,8 @@ import (
 	"encoding/base32"
 	"log/slog"
 	"math"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,9 +37,12 @@ import (
 	machineidv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/machineid/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils"
+	botexpression "github.com/gravitational/teleport/lib/auth/machineid/machineidv1/expression"
 	"github.com/gravitational/teleport/lib/cache"
+	"github.com/gravitational/teleport/lib/expression"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils/sortcache"
+	"github.com/gravitational/teleport/lib/utils/typical"
 )
 
 const (
@@ -607,9 +612,247 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 }
 
 // matchesFilter checks if a unified instance matches the filter criteria.
-func (ic *InventoryCache) matchesFilter(_ *inventoryInstance, _ *inventoryv1.ListUnifiedInstancesFilter) bool {
-	// TODO(rudream): implement filtering for listing instances.
+func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, filter *inventoryv1.ListUnifiedInstancesFilter) bool {
+	if filter == nil {
+		return true
+	}
+
+	// Basic search
+	if filter.Search != "" {
+		searchLower := strings.ToLower(filter.Search)
+		if ui.isInstance() {
+			// For instances, search by hostname or instance ID
+			if !strings.Contains(strings.ToLower(ui.instance.Spec.Hostname), searchLower) &&
+				!strings.Contains(strings.ToLower(ui.instance.GetName()), searchLower) {
+				return false
+			}
+		} else {
+			// For bot instances, search by bot name or instance ID
+			if !strings.Contains(strings.ToLower(ui.bot.Spec.BotName), searchLower) &&
+				!strings.Contains(strings.ToLower(ui.bot.GetMetadata().GetName()), searchLower) {
+				return false
+			}
+		}
+	}
+
+	// Filter by services (only applies to instances)
+	if len(filter.Services) > 0 && ui.isInstance() {
+		instanceServices := make([]string, len(ui.instance.Spec.Services))
+		for i, svc := range ui.instance.Spec.Services {
+			instanceServices[i] = string(svc)
+		}
+
+		hasService := false
+		for _, filterService := range filter.Services {
+			if slices.Contains(instanceServices, filterService) {
+				hasService = true
+				break
+			}
+		}
+		if !hasService {
+			return false
+		}
+	}
+
+	// Filter by updater groups
+	if len(filter.UpdaterGroups) > 0 {
+		var updateGroup string
+		if ui.isInstance() {
+			if ui.instance.Spec.UpdaterInfo != nil {
+				updateGroup = ui.instance.Spec.UpdaterInfo.UpdateGroup
+			}
+		} else {
+			if len(ui.bot.Status.LatestHeartbeats) > 0 && ui.bot.Status.LatestHeartbeats[0].UpdaterInfo != nil {
+				updateGroup = ui.bot.Status.LatestHeartbeats[0].UpdaterInfo.UpdateGroup
+			}
+		}
+		if !slices.Contains(filter.UpdaterGroups, updateGroup) {
+			return false
+		}
+	}
+
+	// Filter by upgraders
+	if len(filter.Upgraders) > 0 {
+		var upgrader string
+		if ui.isInstance() {
+			upgrader = ui.instance.Spec.ExternalUpgrader
+		} else {
+			if len(ui.bot.Status.LatestHeartbeats) > 0 {
+				upgrader = ui.bot.Status.LatestHeartbeats[0].ExternalUpdater
+			}
+		}
+		if !slices.Contains(filter.Upgraders, upgrader) {
+			return false
+		}
+	}
+
+	// Filter with predicate language query
+	if filter.SearchKeywords != "" {
+		match, err := ic.matchSearchKeywords(ui, filter.SearchKeywords)
+		if err != nil {
+			ic.cfg.Logger.WarnContext(context.Background(), "Failed to filter instances using predicate expression", "error", err)
+			return false
+		}
+		if !match {
+			return false
+		}
+	}
+
 	return true
+}
+
+// matchSearchKeywords evaluates predicate language expressions against a unified instance.
+func (ic *InventoryCache) matchSearchKeywords(ui *inventoryInstance, searchKeywords string) (bool, error) {
+	if ui.isInstance() {
+		// For instances, use our instance parser
+		parser, err := newInstanceExpressionParser()
+		if err != nil {
+			return false, trace.Wrap(err)
+		}
+
+		expr, err := parser.Parse(searchKeywords)
+		if err != nil {
+			return false, trace.Wrap(err)
+		}
+
+		env := &instanceEnvironment{
+			instance: ui.instance,
+		}
+
+		match, err := expr.Evaluate(env)
+		if err != nil {
+			return false, trace.Wrap(err)
+		}
+
+		return match, nil
+	} else {
+		// For bot instances, use the existing bot instance expression parser
+		parser, err := botexpression.NewBotInstanceExpressionParser()
+		if err != nil {
+			return false, trace.Wrap(err)
+		}
+
+		expr, err := parser.Parse(searchKeywords)
+		if err != nil {
+			return false, trace.Wrap(err)
+		}
+
+		var latestHeartbeat *machineidv1.BotInstanceStatusHeartbeat
+		if ui.bot.Status != nil && len(ui.bot.Status.LatestHeartbeats) > 0 {
+			latestHeartbeat = ui.bot.Status.LatestHeartbeats[0]
+		}
+
+		var latestAuth *machineidv1.BotInstanceStatusAuthentication
+		if ui.bot.Status != nil && len(ui.bot.Status.LatestAuthentications) > 0 {
+			latestAuth = ui.bot.Status.LatestAuthentications[0]
+		}
+
+		env := &botexpression.Environment{
+			Metadata:             ui.bot.Metadata,
+			Spec:                 ui.bot.Spec,
+			LatestHeartbeat:      latestHeartbeat,
+			LatestAuthentication: latestAuth,
+		}
+
+		match, err := expr.Evaluate(env)
+		if err != nil {
+			return false, trace.Wrap(err)
+		}
+
+		return match, nil
+	}
+}
+
+// instanceEnvironment is the environment in which expressions for instances will be evaluated
+type instanceEnvironment struct {
+	instance *types.InstanceV1
+}
+
+func (e *instanceEnvironment) GetVersion() string {
+	if e == nil || e.instance == nil {
+		return ""
+	}
+	return e.instance.Spec.Version
+}
+
+func (e *instanceEnvironment) GetHostname() string {
+	if e == nil || e.instance == nil {
+		return ""
+	}
+	return e.instance.Spec.Hostname
+}
+
+func (e *instanceEnvironment) GetName() string {
+	if e == nil || e.instance == nil {
+		return ""
+	}
+	return e.instance.GetMetadata().Name
+}
+
+func (e *instanceEnvironment) GetServices() []string {
+	if e == nil || e.instance == nil {
+		return nil
+	}
+	services := e.instance.Spec.Services
+	result := make([]string, len(services))
+	for i, svc := range services {
+		result[i] = string(svc)
+	}
+	return result
+}
+
+func (e *instanceEnvironment) GetUpdaterGroup() string {
+	if e == nil || e.instance == nil || e.instance.Spec.UpdaterInfo == nil {
+		return ""
+	}
+	return e.instance.Spec.UpdaterInfo.UpdateGroup
+}
+
+func (e *instanceEnvironment) GetExternalUpgrader() string {
+	if e == nil || e.instance == nil {
+		return ""
+	}
+	return e.instance.Spec.ExternalUpgrader
+}
+
+func newInstanceExpressionParser() (*typical.Parser[*instanceEnvironment, bool], error) {
+	spec := expression.DefaultParserSpec[*instanceEnvironment]()
+
+	if spec.Variables == nil {
+		spec.Variables = make(map[string]typical.Variable)
+	}
+
+	// Make the version alias consistent with that of bot instances, this way one query expression can filter both by version.
+	spec.Variables["status.latest_heartbeat.version"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+		return env.GetVersion(), nil
+	})
+	spec.Variables["hostname"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+		return env.GetHostname(), nil
+	})
+	spec.Variables["spec.hostname"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+		return env.GetHostname(), nil
+	})
+	spec.Variables["name"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+		return env.GetName(), nil
+	})
+	spec.Variables["metadata.name"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+		return env.GetName(), nil
+	})
+	spec.Variables["spec.services"] = typical.DynamicVariable(func(env *instanceEnvironment) ([]string, error) {
+		return env.GetServices(), nil
+	})
+	spec.Variables["spec.updater_group"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+		return env.GetUpdaterGroup(), nil
+	})
+	spec.Variables["spec.external_upgrader"] = typical.DynamicVariable(func(env *instanceEnvironment) (string, error) {
+		return env.GetExternalUpgrader(), nil
+	})
+
+	spec.Functions["newer_than"] = typical.BinaryFunction[*instanceEnvironment](botexpression.SemverGt)
+	spec.Functions["older_than"] = typical.BinaryFunction[*instanceEnvironment](botexpression.SemverLt)
+	spec.Functions["between"] = typical.TernaryFunction[*instanceEnvironment](botexpression.SemverBetween)
+
+	return typical.NewParser[*instanceEnvironment, bool](spec)
 }
 
 // unifiedInstanceToProto converts a unified instance to a proto UnifiedInstanceItem.
