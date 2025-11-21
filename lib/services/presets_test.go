@@ -688,6 +688,7 @@ func TestAddRoleDefaults(t *testing.T) {
 									types.KindClusterNetworkingConfig,
 									types.KindDatabase,
 									types.KindDevice,
+									types.KindDiscoveryConfig,
 									types.KindGithub,
 									types.KindLoginRule,
 									types.KindNode,

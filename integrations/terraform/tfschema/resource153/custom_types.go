@@ -28,6 +28,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apitypes "github.com/gravitational/teleport/api/types"
+
 	"github.com/gravitational/teleport/integrations/terraform/tfschema"
 )
 
