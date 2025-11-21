@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coreos/go-semver/semver"
 	"github.com/gravitational/trace"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/proto"
@@ -78,6 +79,10 @@ const (
 	// inventoryTypeIndex sorts instances by type, display name
 	// and unique ID.
 	inventoryTypeIndex inventoryIndex = "type"
+
+	// inventoryVersionIndex sorts instances by version, display name
+	// and unique ID.
+	inventoryVersionIndex inventoryIndex = "version"
 
 	// inventoryIDIndex allows lookup by instance ID.
 	// Uses ordered.Encode(bot name, instance ID, kind) where the bot name is "" for regular instances
@@ -146,6 +151,47 @@ func (u *inventoryInstance) getTypeKey() bytestring {
 	}
 
 	return bytestring(ordered.Encode(u.getKind(), name, id))
+}
+
+// getVersionKey returns the composite key for sorting by version using semver ordering.
+func (u *inventoryInstance) getVersionKey() bytestring {
+	var versionStr, name, id string
+	if u.isInstance() {
+		versionStr = u.instance.Spec.Version
+		name = u.instance.GetHostname()
+		id = u.instance.GetName()
+	} else {
+		if u.bot.Status != nil && len(u.bot.Status.LatestHeartbeats) > 0 {
+			versionStr = u.bot.Status.LatestHeartbeats[0].Version
+		}
+		name = u.bot.GetSpec().GetBotName()
+		id = u.bot.GetSpec().GetInstanceId()
+	}
+
+	// If version is empty, treat it as 0.0.0
+	if versionStr == "" {
+		return bytestring(ordered.Encode(uint64(0), uint64(0), uint64(0), uint64(1), "", name, id))
+	}
+
+	// Strip "v" prefix if it's there, eg. v1.2.3 -> 1.2.3
+	versionStr = strings.TrimPrefix(versionStr, "v")
+
+	// Parse as semver
+	v, err := semver.NewVersion(versionStr)
+	if err != nil {
+		// Invalid semvers sort after all other versions
+		return bytestring(ordered.Encode(uint64(1<<63), versionStr, name, id))
+	}
+
+	// Ensure prereleases sort before releases
+	isRelease := uint64(1)
+	prerelease := ""
+	if v.PreRelease != "" {
+		isRelease = 0
+		prerelease = string(v.PreRelease)
+	}
+
+	return bytestring(ordered.Encode(v.Major, v.Minor, v.Patch, isRelease, prerelease, name, id))
 }
 
 // getIDKey returns the key for lookup by instance ID.
@@ -240,6 +286,7 @@ func NewInventoryCache(cfg InventoryCacheConfig) (*InventoryCache, error) {
 			Indexes: map[inventoryIndex]func(*inventoryInstance) string{
 				inventoryAlphabeticalIndex: (*inventoryInstance).getAlphabeticalKey,
 				inventoryTypeIndex:         (*inventoryInstance).getTypeKey,
+				inventoryVersionIndex:      (*inventoryInstance).getVersionKey,
 				inventoryIDIndex:           (*inventoryInstance).getIDKey,
 			},
 		}),
@@ -606,12 +653,23 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 	var items []*inventoryv1.UnifiedInstanceItem
 	var nextPageToken string
 
-	index := inventoryAlphabeticalIndex
-	var endKey string
-	// Determine if we should use the type index.
-	useTypeIndex := req.GetFilter() != nil && len(req.GetFilter().GetInstanceTypes()) == 1
-	if useTypeIndex {
+	var index inventoryIndex
+
+	switch req.GetSort() {
+	case inventoryv1.UnifiedInstanceSort_UNIFIED_INSTANCE_SORT_TYPE:
 		index = inventoryTypeIndex
+	case inventoryv1.UnifiedInstanceSort_UNIFIED_INSTANCE_SORT_VERSION:
+		index = inventoryVersionIndex
+	case inventoryv1.UnifiedInstanceSort_UNIFIED_INSTANCE_SORT_NAME:
+		index = inventoryAlphabeticalIndex
+	default:
+		index = inventoryAlphabeticalIndex
+	}
+
+	var endKey string
+
+	// For type index with a single instance type filter, set bounds
+	if index == inventoryTypeIndex && req.GetFilter() != nil && len(req.GetFilter().GetInstanceTypes()) == 1 {
 		if req.PageToken == "" {
 			kind := instanceTypeToKind(req.GetFilter().GetInstanceTypes()[0])
 			startKey = string(ordered.Encode(kind))
@@ -619,18 +677,23 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 		}
 	}
 
-	for sf := range ic.cache.Ascend(index, startKey, endKey) {
+	// Determine sort order (ascending vs descending)
+	ascending := req.GetOrder() != inventoryv1.SortOrder_SORT_ORDER_DESCENDING
+
+	// Iterate over items in the cache
+	iterator := ic.cache.Ascend(index, startKey, endKey)
+	if !ascending {
+		iterator = ic.cache.Descend(index, startKey, endKey)
+	}
+
+	for sf := range iterator {
 		if !ic.matchesFilter(sf, parsed) {
 			continue
 		}
 
 		if len(items) == int(req.PageSize) {
-			var rawKey string
-			if index == inventoryAlphabeticalIndex {
-				rawKey = sf.getAlphabeticalKey()
-			} else {
-				rawKey = sf.getTypeKey()
-			}
+			// Get the key for the current item based on the index
+			rawKey := ic.getKeyForIndex(sf, index)
 			// Encode the next page token to base32hex
 			nextPageToken = base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(rawKey))
 			break
@@ -653,6 +716,25 @@ func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, parsed *parsedFil
 	}
 
 	filter := parsed.filter
+
+	// Filter by instance types
+	if len(filter.InstanceTypes) > 0 {
+		isInstance := ui.isInstance()
+		matchesType := false
+		for _, instanceType := range filter.InstanceTypes {
+			if instanceType == inventoryv1.InstanceType_INSTANCE_TYPE_INSTANCE && isInstance {
+				matchesType = true
+				break
+			}
+			if instanceType == inventoryv1.InstanceType_INSTANCE_TYPE_BOT_INSTANCE && !isInstance {
+				matchesType = true
+				break
+			}
+		}
+		if !matchesType {
+			return false
+		}
+	}
 
 	// Basic search
 	if filter.Search != "" {
@@ -915,6 +997,22 @@ func newUnifiedExpressionParser() (*typical.Parser[*unifiedFilterEnvironment, bo
 	spec.Functions["between"] = typical.TernaryFunction[*unifiedFilterEnvironment](expression.SemverBetween)
 
 	return typical.NewParser[*unifiedFilterEnvironment, bool](spec)
+}
+
+// getKeyForIndex returns the key a the given instance based on the index
+func (ic *InventoryCache) getKeyForIndex(ui *inventoryInstance, index inventoryIndex) string {
+	switch index {
+	case inventoryAlphabeticalIndex:
+		return ui.getAlphabeticalKey()
+	case inventoryTypeIndex:
+		return ui.getTypeKey()
+	case inventoryVersionIndex:
+		return ui.getVersionKey()
+	case inventoryIDIndex:
+		return ui.getIDKey()
+	default:
+		return ui.getAlphabeticalKey()
+	}
 }
 
 // unifiedInstanceToProto converts a unified instance to a proto UnifiedInstanceItem.
