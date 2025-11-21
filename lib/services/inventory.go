@@ -21,6 +21,7 @@ package services
 import (
 	"context"
 
+	inventoryv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
 	"github.com/gravitational/teleport/api/internalutils/stream"
 	"github.com/gravitational/teleport/api/types"
 )
@@ -33,6 +34,9 @@ import (
 type Inventory interface {
 	// GetInstances iterates the full teleport server inventory.
 	GetInstances(ctx context.Context, req types.InstanceFilter) stream.Stream[types.Instance]
+
+	// ListUnifiedInstances returns a paginated list of unified instances (teleport instances and bot instances).
+	ListUnifiedInstances(ctx context.Context, req *inventoryv1.ListUnifiedInstancesRequest) (*inventoryv1.ListUnifiedInstancesResponse, error)
 }
 
 // InventoryInternal is a subset of the PresenceInternal interface that extends

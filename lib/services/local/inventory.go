@@ -24,6 +24,7 @@ import (
 	"github.com/gravitational/trace"
 
 	apidefaults "github.com/gravitational/teleport/api/defaults"
+	inventoryv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/inventory/v1"
 	apistream "github.com/gravitational/teleport/api/internalutils/stream"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/backend"
@@ -123,6 +124,12 @@ func (s *PresenceService) UpsertInstance(ctx context.Context, instance types.Ins
 	_, err = s.Backend.Put(ctx, item)
 
 	return trace.Wrap(err)
+}
+
+// ListUnifiedInstances returns a paginated list of unified instances.
+// This method isn't implemented in the local backend service. Only the inventory cache should be used
+func (s *PresenceService) ListUnifiedInstances(ctx context.Context, req *inventoryv1.ListUnifiedInstancesRequest) (*inventoryv1.ListUnifiedInstancesResponse, error) {
+	return nil, trace.NotImplemented("ListUnifiedInstances is not implemented in the local presence service. Use the inventory cache instead")
 }
 
 const instancePrefix = "instances"

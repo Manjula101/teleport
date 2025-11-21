@@ -1412,6 +1412,10 @@ func (m *mockInventoryService) GetInstances(ctx context.Context, filter types.In
 	return stream.Slice(items)
 }
 
+func (m *mockInventoryService) ListUnifiedInstances(ctx context.Context, req *inventoryv1.ListUnifiedInstancesRequest) (*inventoryv1.ListUnifiedInstancesResponse, error) {
+	return nil, nil
+}
+
 // mockBotInstanceCache is a mock implementation of services.BotInstance.
 type mockBotInstanceCache struct {
 	bots []*machineidv1.BotInstance
