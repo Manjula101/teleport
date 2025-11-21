@@ -670,10 +670,10 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 
 	// For type index with a single instance type filter, set bounds
 	if index == inventoryTypeIndex && req.GetFilter() != nil && len(req.GetFilter().GetInstanceTypes()) == 1 {
+		kind := instanceTypeToKind(req.GetFilter().GetInstanceTypes()[0])
+		endKey = string(ordered.Encode(kind, ordered.Inf))
 		if req.PageToken == "" {
-			kind := instanceTypeToKind(req.GetFilter().GetInstanceTypes()[0])
 			startKey = string(ordered.Encode(kind))
-			endKey = string(ordered.Encode(kind, ordered.Inf))
 		}
 	}
 
@@ -762,7 +762,11 @@ func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, parsed *parsedFil
 	}
 
 	// Filter by services (only applies to instances)
-	if len(filter.Services) > 0 && ui.isInstance() {
+	if len(filter.Services) > 0 {
+		// Bot instances don't have services, so exclude them when the services filter is active
+		if !ui.isInstance() {
+			return false
+		}
 		filterServices := set.New(filter.Services...)
 		hasService := false
 		for _, svc := range ui.instance.Spec.Services {
