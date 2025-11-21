@@ -163,7 +163,9 @@ func DefaultParserSpec[evaluationEnv any]() typical.ParserSpec[evaluationEnv] {
 				}),
 			"semver.newer_than": typical.BinaryFunction[evaluationEnv](SemverGt),
 			"semver.older_than": typical.BinaryFunction[evaluationEnv](SemverLt),
-			"semver.between": typical.TernaryFunction[evaluationEnv](SemverBetween),
+			"semver.between":    typical.TernaryFunction[evaluationEnv](SemverBetween),
+			"newer_than":        typical.BinaryFunction[evaluationEnv](SemverGt),
+			"older_than":        typical.BinaryFunction[evaluationEnv](SemverLt),
 		},
 		Methods: map[string]typical.Function{
 			"add": typical.BinaryVariadicFunction[evaluationEnv](

@@ -24,46 +24,41 @@ import (
 func NewBotInstanceExpressionParser() (*typical.Parser[*Environment, bool], error) {
 	spec := expression.DefaultParserSpec[*Environment]()
 
-	spec.Variables = map[string]typical.Variable{
-		"name": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetMetadata().GetName(), nil
-		}),
-		"metadata.name": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetMetadata().GetName(), nil
-		}),
-		"spec.bot_name": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetSpec().GetBotName(), nil
-		}),
-		"spec.instance_id": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetSpec().GetInstanceId(), nil
-		}),
-		"status.latest_heartbeat.architecture": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetLatestHeartbeat().GetArchitecture(), nil
-		}),
-		"status.latest_heartbeat.os": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetLatestHeartbeat().GetOs(), nil
-		}),
-		"status.latest_heartbeat.hostname": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetLatestHeartbeat().GetHostname(), nil
-		}),
-		"status.latest_heartbeat.one_shot": typical.DynamicVariable(func(env *Environment) (bool, error) {
-			return env.GetLatestHeartbeat().GetOneShot(), nil
-		}),
-		"status.latest_heartbeat.version": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetLatestHeartbeat().GetVersion(), nil
-		}),
-		"status.latest_authentication.join_method": typical.DynamicVariable(func(env *Environment) (string, error) {
-			return env.GetLatestAuthentication().GetJoinMethod(), nil
-		}),
+	if spec.Variables == nil {
+		spec.Variables = make(map[string]typical.Variable)
 	}
 
-	// Semver comparison functions are now available from expression.DefaultParserSpec.
-	// We add the unprefixed versions for backward compatibility.
-	// e.g. `newer_than(status.latest_heartbeat.version, "19.0.0")`
-	spec.Functions["newer_than"] = typical.BinaryFunction[*Environment](expression.SemverGt)
-	// e.g. `older_than(status.latest_heartbeat.version, "19.0.2")`
-	spec.Functions["older_than"] = typical.BinaryFunction[*Environment](expression.SemverLt)
-	// e.g. `between(status.latest_heartbeat.version, "19.0.0", "19.0.2")`
+	spec.Variables["name"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetMetadata().GetName(), nil
+	})
+	spec.Variables["metadata.name"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetMetadata().GetName(), nil
+	})
+	spec.Variables["spec.bot_name"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetSpec().GetBotName(), nil
+	})
+	spec.Variables["spec.instance_id"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetSpec().GetInstanceId(), nil
+	})
+	spec.Variables["status.latest_heartbeat.architecture"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetLatestHeartbeat().GetArchitecture(), nil
+	})
+	spec.Variables["status.latest_heartbeat.os"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetLatestHeartbeat().GetOs(), nil
+	})
+	spec.Variables["status.latest_heartbeat.hostname"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetLatestHeartbeat().GetHostname(), nil
+	})
+	spec.Variables["status.latest_heartbeat.one_shot"] = typical.DynamicVariable(func(env *Environment) (bool, error) {
+		return env.GetLatestHeartbeat().GetOneShot(), nil
+	})
+	spec.Variables["status.latest_heartbeat.version"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetLatestHeartbeat().GetVersion(), nil
+	})
+	spec.Variables["status.latest_authentication.join_method"] = typical.DynamicVariable(func(env *Environment) (string, error) {
+		return env.GetLatestAuthentication().GetJoinMethod(), nil
+	})
+
 	spec.Functions["between"] = typical.TernaryFunction[*Environment](expression.SemverBetween)
 
 	return typical.NewParser[*Environment, bool](spec)

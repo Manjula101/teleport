@@ -678,11 +678,11 @@ func (ic *InventoryCache) ListUnifiedInstances(ctx context.Context, req *invento
 	}
 
 	// Determine sort order (ascending vs descending)
-	ascending := req.GetOrder() != inventoryv1.SortOrder_SORT_ORDER_DESCENDING
+	isDesc := req.GetOrder() == inventoryv1.SortOrder_SORT_ORDER_DESCENDING
 
 	// Iterate over items in the cache
 	iterator := ic.cache.Ascend(index, startKey, endKey)
-	if !ascending {
+	if isDesc {
 		iterator = ic.cache.Descend(index, startKey, endKey)
 	}
 
@@ -738,19 +738,26 @@ func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, parsed *parsedFil
 
 	// Basic search
 	if filter.Search != "" {
-		searchLower := strings.ToLower(filter.Search)
+		var searchableText string
 		if ui.isInstance() {
 			// For instances, search by hostname or instance ID
-			if !strings.Contains(strings.ToLower(ui.instance.Spec.Hostname), searchLower) &&
-				!strings.Contains(strings.ToLower(ui.instance.GetName()), searchLower) {
-				return false
-			}
+			searchableText = strings.ToLower(ui.instance.Spec.Hostname + " " + ui.instance.GetName())
 		} else {
 			// For bot instances, search by bot name or instance ID
-			if !strings.Contains(strings.ToLower(ui.bot.Spec.BotName), searchLower) &&
-				!strings.Contains(strings.ToLower(ui.bot.GetMetadata().GetName()), searchLower) {
-				return false
+			searchableText = strings.ToLower(ui.bot.Spec.BotName + " " + ui.bot.GetMetadata().GetName())
+		}
+
+		searchTerms := strings.Fields(strings.ToLower(filter.Search))
+		matchedAll := true
+		for _, term := range searchTerms {
+			if !strings.Contains(searchableText, term) {
+				matchedAll = false
+				break
 			}
+		}
+
+		if !matchedAll {
+			return false
 		}
 	}
 
@@ -805,7 +812,7 @@ func (ic *InventoryCache) matchesFilter(ui *inventoryInstance, parsed *parsedFil
 	if filter.SearchKeywords != "" {
 		match, err := ic.matchSearchKeywords(ui, parsed)
 		if err != nil {
-			ic.cfg.Logger.WarnContext(context.Background(), "Failed to filter instances using predicate expression", "error", err)
+			ic.cfg.Logger.DebugContext(context.Background(), "Failed to filter instances using predicate expression", "error", err)
 			return false
 		}
 		if !match {
@@ -992,8 +999,6 @@ func newUnifiedExpressionParser() (*typical.Parser[*unifiedFilterEnvironment, bo
 		return env.GetExternalUpgrader(), nil
 	})
 
-	spec.Functions["newer_than"] = typical.BinaryFunction[*unifiedFilterEnvironment](expression.SemverGt)
-	spec.Functions["older_than"] = typical.BinaryFunction[*unifiedFilterEnvironment](expression.SemverLt)
 	spec.Functions["between"] = typical.TernaryFunction[*unifiedFilterEnvironment](expression.SemverBetween)
 
 	return typical.NewParser[*unifiedFilterEnvironment, bool](spec)
