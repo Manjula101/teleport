@@ -349,6 +349,43 @@ func (s *PresenceService) GetAuthServers() ([]types.Server, error) {
 	return s.getServers(context.TODO(), types.KindAuthServer, authServersPrefix)
 }
 
+// ListAuthServers returns a paginated list of registered auth servers.
+func (s *PresenceService) ListAuthServers(ctx context.Context, pageSize int, pageToken string) ([]types.Server, string, error) {
+	rangeStart := backend.NewKey(authServersPrefix, pageToken)
+	rangeEnd := backend.RangeEnd(backend.ExactKey(authServersPrefix))
+
+	// Adjust page size, so it can't be too large.
+	if pageSize <= 0 || pageSize > apidefaults.DefaultChunkSize {
+		pageSize = apidefaults.DefaultChunkSize
+	}
+
+	limit := pageSize + 1
+
+	result, err := s.GetRange(ctx, rangeStart, rangeEnd, limit)
+	if err != nil {
+		return nil, "", trace.Wrap(err)
+	}
+
+	servers := make([]types.Server, 0, len(result.Items))
+	for _, item := range result.Items {
+		server, err := services.UnmarshalServer(item.Value, types.KindAuthServer)
+		if err != nil {
+			slog.WarnContext(ctx, "Skipping item during ListAuthServers because conversion from backend item failed", "key", item.Key, "error", err)
+			continue
+		}
+		servers = append(servers, server)
+	}
+
+	next := ""
+	if len(servers) > pageSize {
+		next = backend.GetPaginationKey(servers[pageSize])
+		clear(servers[pageSize:])
+		// Truncate the last item that was used to determine next row existence.
+		servers = servers[:pageSize]
+	}
+	return servers, next, nil
+}
+
 // UpsertAuthServer registers auth server presence, permanently if ttl is 0 or
 // for the specified duration with second resolution if it's >= 1 second
 func (s *PresenceService) UpsertAuthServer(ctx context.Context, server types.Server) error {
@@ -376,6 +413,43 @@ func (s *PresenceService) UpsertProxy(ctx context.Context, server types.Server) 
 // GetProxies returns a list of registered proxies
 func (s *PresenceService) GetProxies() ([]types.Server, error) {
 	return s.getServers(context.TODO(), types.KindProxy, proxiesPrefix)
+}
+
+// ListProxies returns a paginated list of registered proxy servers.
+func (s *PresenceService) ListProxies(ctx context.Context, pageSize int, pageToken string) ([]types.Server, string, error) {
+	rangeStart := backend.NewKey(proxiesPrefix, pageToken)
+	rangeEnd := backend.RangeEnd(backend.ExactKey(proxiesPrefix))
+
+	// Adjust page size, so it can't be too large.
+	if pageSize <= 0 || pageSize > apidefaults.DefaultChunkSize {
+		pageSize = apidefaults.DefaultChunkSize
+	}
+
+	limit := pageSize + 1
+
+	result, err := s.GetRange(ctx, rangeStart, rangeEnd, limit)
+	if err != nil {
+		return nil, "", trace.Wrap(err)
+	}
+
+	servers := make([]types.Server, 0, len(result.Items))
+	for _, item := range result.Items {
+		server, err := services.UnmarshalServer(item.Value, types.KindProxy)
+		if err != nil {
+			slog.WarnContext(ctx, "Skipping item during ListProxies because conversion from backend item failed", "key", item.Key, "error", err)
+			continue
+		}
+		servers = append(servers, server)
+	}
+
+	next := ""
+	if len(servers) > pageSize {
+		next = backend.GetPaginationKey(servers[pageSize])
+		clear(servers[pageSize:])
+		// Truncate the last item that was used to determine next row existence.
+		servers = servers[:pageSize]
+	}
+	return servers, next, nil
 }
 
 // DeleteAllProxies deletes all proxies
