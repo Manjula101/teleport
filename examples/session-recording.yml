@@ -1,0 +1,10 @@
+# Teleport Session Recording Config
+# Pairs with JIT access system
+kind: session_recording_config
+version: v2
+metadata:
+  name: recording-config
+spec:
+  mode: best_effort  # Or "strict" to block unrecorded sessions
+  enabled: true
+  max_age: 90d  # Keep recordings for 90 days
